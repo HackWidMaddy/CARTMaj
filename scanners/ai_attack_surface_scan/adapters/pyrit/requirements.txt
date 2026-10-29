@@ -1,0 +1,3 @@
+# PyRIT adapter — installed into /opt/venv-pyrit (isolated from garak: datasets
+# pin conflict). Pinned: adapters/pyrit/TOOL_API.md + the runner/parser target it.
+pyrit==0.14.0

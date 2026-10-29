@@ -1,0 +1,32 @@
+{
+  "description": "A date bound must be an ISO date",
+  "mode": "denylist",
+  "rules": {
+    "version": 1,
+    "kinds": {
+      "vuln.nuclei": {
+        "enabled": true,
+        "action": "mute",
+        "rules": [
+          {
+            "id": "k3f9a2",
+            "name": "When",
+            "enabled": true,
+            "all": [
+              {
+                "field": "updated_at",
+                "op": "before",
+                "value": "yesterday"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "ok": true,
+    "active": [],
+    "errors": 1
+  }
+}

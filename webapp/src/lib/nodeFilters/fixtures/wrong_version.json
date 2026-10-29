@@ -1,0 +1,13 @@
+{
+  "description": "Only version 1 documents are read",
+  "mode": "denylist",
+  "rules": {
+    "version": 2,
+    "kinds": {}
+  },
+  "expect": {
+    "ok": false,
+    "active": [],
+    "errors": 1
+  }
+}

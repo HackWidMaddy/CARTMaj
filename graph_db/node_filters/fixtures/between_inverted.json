@@ -1,0 +1,35 @@
+{
+  "description": "between needs lower <= upper",
+  "mode": "denylist",
+  "rules": {
+    "version": 1,
+    "kinds": {
+      "vuln.nuclei": {
+        "enabled": true,
+        "action": "mute",
+        "rules": [
+          {
+            "id": "k3f9a2",
+            "name": "Inverted",
+            "enabled": true,
+            "all": [
+              {
+                "field": "cvss",
+                "op": "between",
+                "value": [
+                  9,
+                  1
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "ok": true,
+    "active": [],
+    "errors": 1
+  }
+}

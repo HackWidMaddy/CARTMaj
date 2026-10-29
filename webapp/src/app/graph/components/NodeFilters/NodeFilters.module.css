@@ -1,0 +1,824 @@
+/* Mute Rules. Anchored like the other table views: the graph page's .content
+   is position:relative, so fill it with inset:0 and scroll inside. */
+.wrap {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+}
+
+.headerRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.label {
+  color: var(--text-tertiary);
+  font-weight: 500;
+  min-width: 44px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+/* Mode toggle: a two-segment control. */
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: none;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.segment + .segment {
+  border-left: 1px solid var(--border-subtle);
+}
+
+.segmentActive {
+  background: color-mix(in srgb, var(--accent-secondary) 18%, var(--bg-elevated));
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.segment:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* Armed status: attached to its label so it wraps as one unit. */
+.armed {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--radius-full, 999px);
+  background: color-mix(in srgb, var(--status-info) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--status-info) 45%, transparent);
+  color: var(--text-primary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.armedDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-info);
+  flex-shrink: 0;
+}
+
+.notArmed {
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.lastApply {
+  color: var(--text-tertiary);
+}
+
+.changedNote {
+  color: var(--status-warning-text, var(--text-secondary));
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.button:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.primary {
+  background: var(--accent-secondary);
+  border-color: var(--accent-secondary);
+  color: var(--text-on-accent);
+}
+
+/* inline-flex because the global reset makes an <svg> display:block, which put
+   the "+" of "+ condition" on a line of its own. */
+.linkButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent-secondary);
+  font-size: var(--text-xs);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.dirty {
+  color: var(--status-warning-text, var(--text-secondary));
+  font-weight: 500;
+}
+
+.progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--accent-secondary);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent-secondary) 10%, transparent);
+  color: var(--text-primary);
+}
+
+.banner {
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+}
+
+.bannerWarn {
+  border-color: var(--severity-medium, #d29922);
+  background: color-mix(in srgb, var(--severity-medium, #d29922) 12%, transparent);
+  color: var(--text-primary);
+}
+
+.errorList {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+/* Two columns: the kind rail and the selected kind. */
+.body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* The rail sits on the page background like the panel beside it. --bg-secondary
+   is only #fafafa against white in the light theme; --bg-tertiary is the first
+   shade that separates in both themes, and still leaves --bg-hover (the
+   selected kind) a step further. */
+.rail {
+  width: 230px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  background: var(--bg-tertiary);
+  border-right: 1px solid var(--border-strong);
+  padding: var(--space-2) 0;
+}
+
+.railSelect {
+  display: none;
+}
+
+.railGroup {
+  padding: var(--space-2) var(--space-3) 2px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.railItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px var(--space-3);
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+.railItem:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.railItemActive {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  font-weight: 600;
+  box-shadow: inset 2px 0 0 var(--accent-secondary);
+}
+
+.railCount {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+}
+
+.railOn {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--status-info);
+  flex-shrink: 0;
+}
+
+.railOff {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  flex-shrink: 0;
+}
+
+.railMuted {
+  color: var(--text-tertiary);
+  cursor: default;
+}
+
+.railMuted:hover {
+  background: none;
+  color: var(--text-tertiary);
+}
+
+.panel {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.panelHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.panelTitle {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.behaviour {
+  padding: 1px 7px;
+  border-radius: var(--radius-full, 999px);
+  border: 1px solid var(--border-subtle);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-tertiary);
+}
+
+.counts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  color: var(--text-secondary);
+}
+
+/* Same reset trap as .linkButton: keeps the "kept by guards" info icon on its line. */
+.counts svg {
+  display: inline-block;
+  vertical-align: -1px;
+}
+
+.countStrong {
+  color: var(--text-primary);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.note {
+  margin: 0;
+  color: var(--text-tertiary);
+  line-height: 1.45;
+}
+
+.warnNote {
+  margin: 0;
+  color: var(--status-warning-text, var(--text-secondary));
+}
+
+.ruleCard {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+.ruleCardDisabled {
+  opacity: 0.65;
+}
+
+.ruleCardInvalid {
+  border-color: var(--status-error, #ef4444);
+}
+
+.ruleHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px var(--space-2);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.ruleName {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.ruleName:focus,
+.ruleName:hover {
+  border-color: var(--border-subtle);
+  background: var(--bg-secondary);
+}
+
+.ruleMatched {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  font-weight: 600;
+  min-width: 40px;
+  text-align: right;
+}
+
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.iconButton:hover {
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.ruleBody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--space-2);
+}
+
+.conditionRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.conditionText {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+}
+
+.and {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+.input,
+.select {
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  min-width: 0;
+}
+
+.input {
+  flex: 1;
+  min-width: 120px;
+}
+
+.numberInput {
+  width: 90px;
+  flex: 0 0 auto;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.chip {
+  padding: 2px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full, 999px);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.chipOn {
+  border-color: var(--accent-secondary);
+  background: color-mix(in srgb, var(--accent-secondary) 18%, var(--bg-secondary));
+  color: var(--text-primary);
+}
+
+.groupChip {
+  font-style: italic;
+}
+
+.ruleError {
+  margin: 0;
+  color: var(--status-error-text, #ef4444);
+}
+
+.samples {
+  margin: 0;
+  padding: 6px var(--space-2) var(--space-2);
+  border-top: 1px dashed var(--border-subtle);
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text-tertiary);
+}
+
+.sampleName {
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.panelFoot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.menuWrap {
+  position: relative;
+}
+
+.menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  z-index: 20;
+  min-width: 220px;
+  padding: 3px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.menuItem {
+  display: block;
+  width: 100%;
+  padding: 5px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+.menuItem:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.overlaps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-tertiary);
+}
+
+.overlapLink {
+  color: var(--accent-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.empty,
+.loadingBox {
+  padding: var(--space-6, 24px) var(--space-4);
+  text-align: center;
+  color: var(--text-tertiary);
+}
+
+.skeleton {
+  height: 12px;
+  margin: 8px 0;
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+/* The Apply modal. */
+.modalBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.option {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.optionOn {
+  border-color: var(--accent-secondary);
+  background: color-mix(in srgb, var(--accent-secondary) 8%, transparent);
+}
+
+.optionDisabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.optionTitle {
+  display: block;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.optionDetail {
+  display: block;
+  margin: 2px 0 0;
+  color: var(--text-tertiary);
+  line-height: 1.4;
+}
+
+.modalFoot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+@media (max-width: 900px) {
+  .headerRow {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  .body {
+    flex-direction: column;
+  }
+
+  .rail {
+    display: none;
+  }
+
+  .railSelect {
+    display: block;
+    margin: var(--space-2) var(--space-3) 0;
+    width: calc(100% - 2 * var(--space-3));
+  }
+}
+
+/* ---- Presets ------------------------------------------------------------ */
+
+.presetMenuItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Neutral grey at full opacity, not a faded ghost: a 40% item is unreadable in
+   the light theme. */
+.presetMenuItem:disabled {
+  color: var(--text-tertiary);
+  cursor: default;
+  background: none;
+}
+
+/* The loaded preset's name, shown while the rules still match it. Same green
+   as the recon form's "Preset applied" badge. */
+.presetApplied {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 280px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  border-radius: var(--radius-sm);
+  background: rgba(34, 197, 94, 0.08);
+  color: rgba(34, 197, 94, 0.95);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+}
+
+.presetApplied > svg {
+  flex-shrink: 0;
+}
+
+.presetAppliedLabel {
+  font-size: 9px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.presetAppliedName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* green-500 on a light surface is ~2.3:1; green-700 ink clears 4.5:1. */
+:global([data-theme='light']) .presetApplied {
+  border-color: rgba(21, 128, 61, 0.35);
+  background: rgba(21, 128, 61, 0.08);
+  color: #15803d;
+}
+
+:global([data-theme='light']) .presetAppliedLabel {
+  color: var(--text-secondary);
+}
+
+.presetForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.presetField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.presetFieldLabel {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.presetSummary {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.presetList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.presetRow {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+.presetRowMain {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.presetRowName {
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.presetRowDesc {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.presetRowMeta {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.presetRowActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.presetEdit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+}
+
+.presetEdit .presetRowActions {
+  justify-content: flex-end;
+}
+
+.presetEmpty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-6) var(--space-3);
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+.presetEmpty p {
+  margin: 0;
+}

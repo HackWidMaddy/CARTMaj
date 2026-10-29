@@ -1,0 +1,27 @@
+{
+  "description": "match_all is refused in allowlist mode",
+  "mode": "allowlist",
+  "rules": {
+    "version": 1,
+    "kinds": {
+      "vuln.nuclei": {
+        "enabled": true,
+        "action": "mute",
+        "rules": [
+          {
+            "id": "k3f9a2",
+            "name": "Everything",
+            "enabled": true,
+            "all": [],
+            "match_all": true
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "ok": true,
+    "active": [],
+    "errors": 2
+  }
+}

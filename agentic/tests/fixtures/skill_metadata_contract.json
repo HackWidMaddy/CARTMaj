@@ -1,0 +1,75 @@
+{
+  "description": "One Generate-with-AI round trip, shared by webapp/src/app/api/users/[id]/attack-skills/generate-metadata/route.test.ts (route_request -> agent_request, agent_response -> route_response) and agentic/tests/test_skill_metadata.py (agent_request -> agent_response). A field renamed on either side breaks one of them.",
+  "user_id": "alice",
+  "model": "deepseek/deepseek-flash",
+  "route_request": {
+    "items": [
+      {
+        "key": "a",
+        "fileName": "pickle_cookie.md",
+        "content": "# Pickle cookie review\n\nDecode the prefs cookie and look for a pickle protocol header.",
+        "name": "",
+        "fields": ["name", "description"]
+      },
+      {
+        "key": "b",
+        "fileName": "login_lockout.md",
+        "content": "## Steps\n\nSend five wrong passwords to the login form and watch for a lockout.",
+        "name": "Login lockout review",
+        "fields": ["description"]
+      }
+    ],
+    "otherNames": ["Session cookie audit"]
+  },
+  "agent_request": {
+    "items": [
+      {
+        "key": "a",
+        "content": "# Pickle cookie review\n\nDecode the prefs cookie and look for a pickle protocol header.",
+        "file_name": "pickle_cookie.md",
+        "name": "",
+        "want_name": true,
+        "want_description": true
+      },
+      {
+        "key": "b",
+        "content": "## Steps\n\nSend five wrong passwords to the login form and watch for a lockout.",
+        "file_name": "login_lockout.md",
+        "name": "Login lockout review",
+        "want_name": false,
+        "want_description": true
+      }
+    ],
+    "other_names": ["Session cookie audit"],
+    "model": "deepseek/deepseek-flash",
+    "user_id": "alice"
+  },
+  "agent_response": {
+    "items": [
+      {
+        "key": "a",
+        "name": "Pickle Cookie Review",
+        "description": "Checks a prefs cookie for unsafe Python pickle deserialization."
+      },
+      {
+        "key": "b",
+        "description": "Tests whether the login form locks out after repeated wrong passwords."
+      }
+    ],
+    "model_used": "deepseek/deepseek-flash"
+  },
+  "route_response": {
+    "items": [
+      {
+        "key": "a",
+        "name": "Pickle Cookie Review",
+        "description": "Checks a prefs cookie for unsafe Python pickle deserialization."
+      },
+      {
+        "key": "b",
+        "description": "Tests whether the login form locks out after repeated wrong passwords."
+      }
+    ],
+    "modelUsed": "deepseek/deepseek-flash"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "description": "A document that is not an object filters nothing",
+  "mode": "denylist",
+  "rules": [
+    "not",
+    "an",
+    "object"
+  ],
+  "expect": {
+    "ok": false,
+    "active": [],
+    "errors": 1
+  }
+}

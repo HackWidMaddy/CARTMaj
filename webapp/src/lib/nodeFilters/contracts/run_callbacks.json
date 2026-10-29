@@ -1,0 +1,29 @@
+{
+  "finish": {
+    "error": null,
+    "stats": {
+      "errors": [],
+      "kinds": {
+        "vuln.nuclei": {
+          "active": true,
+          "muted": 2,
+          "rules": {
+            "k3f9a2": 2
+          }
+        }
+      },
+      "mode": "denylist",
+      "ok": true,
+      "partial": false,
+      "totals": {
+        "muted": 2
+      }
+    },
+    "status": "completed"
+  },
+  "heartbeat": {
+    "progress": {
+      "scanned": 10
+    }
+  }
+}

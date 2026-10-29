@@ -1,0 +1,1849 @@
+import os
+import sys
+import json
+import uuid
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from recon.partial_recon_modules.helpers import (
+    typed_host_ok,
+    root_orgs,
+    _is_host_in_scope,
+    _is_valid_hostname,
+    _is_valid_url,
+    _should_include_root_domain,
+    host_in_roots,
+    include_root_for,
+    partial_settings,
+    scope_roots,
+)
+from recon.partial_recon_modules.graph_builders import (
+    graph_scope_subdomains,
+    _build_http_probe_data_from_graph,
+    declared_only_unsafe,
+    graph_target_hosts,
+    graph_url_scope,
+    url_host,
+)
+from recon.partial_recon_modules.user_inputs import _create_user_subdomains_in_graph
+from recon.helpers import build_target_urls, extract_targets_from_recon
+from recon.helpers.auth_profile import merge_auth_headers
+
+
+def run_katana(config: dict) -> None:
+    """
+    Run partial resource enumeration using only Katana (not the full
+    resource_enum pipeline). Katana crawls BaseURLs to discover endpoints.
+
+    Unlike run_resource_enum() which runs ALL sub-tools (Katana + Hakrawler +
+    GAU + jsluice + FFuf + etc.), this runs only the Katana crawler +
+    organize_endpoints, then updates the graph via update_graph_from_resource_enum.
+    """
+    from recon.helpers.resource_enum import (
+        run_katana_crawler,
+        pull_katana_docker_image,
+        organize_endpoints,
+    )
+
+    roots = scope_roots(config)
+
+    user_id = os.environ.get("USER_ID", "")
+    project_id = os.environ.get("PROJECT_ID", "")
+
+    print(f"[*][Partial Recon] Loading project settings...")
+    settings = partial_settings(config)
+
+    # Force-enable Katana since the user explicitly chose to run it
+    settings['KATANA_ENABLED'] = True
+
+    print(f"\n{'=' * 50}")
+    print(f"[*][Partial Recon] Katana Crawling (only)")
+    print(f"[*][Partial Recon] Roots: {', '.join(roots)}")
+    print(f"{'=' * 50}\n")
+
+    # Parse user targets -- Katana accepts URLs
+    user_targets = config.get("user_targets") or {}
+    user_urls = []
+    url_attach_to = None
+    user_input_id = None
+
+    if user_targets:
+        for entry in user_targets.get("urls", []):
+            entry = entry.strip()
+            if entry and _is_valid_url(entry):
+                user_urls.append(entry)
+            elif entry:
+                print(f"[!][Partial Recon] Skipping invalid URL: {entry}")
+
+        url_attach_to = user_targets.get("url_attach_to")  # BaseURL or None
+
+    if user_urls:
+        print(f"[+][Partial Recon] Validated {len(user_urls)} custom URLs")
+        if url_attach_to:
+            print(f"[+][Partial Recon] URLs will be attached to BaseURL: {url_attach_to}")
+        else:
+            print(f"[+][Partial Recon] URLs will be tracked via UserInput (generic)")
+
+    # Track whether we need a UserInput node (created after scan succeeds, not before)
+    needs_user_input = bool(user_urls and not url_attach_to)
+
+    # Build recon_data from Neo4j graph (or start empty if user unchecked graph targets)
+    include_graph = config.get("include_graph_targets", True)
+    if include_graph:
+        print(f"[*][Partial Recon] Querying graph for targets (BaseURLs)...")
+        recon_data = _build_http_probe_data_from_graph(
+            roots, user_id, project_id,
+            include_root_domain=_should_include_root_domain(settings),
+            domain_groups=config.get("domain_groups"),
+        )
+    else:
+        print(f"[*][Partial Recon] Skipping graph targets (user opted out)")
+        recon_data = {
+            "domain": roots[0] if roots else "",
+            "domains": roots,
+            "subdomains": [],
+            "http_probe": {
+                "by_url": {},
+            },
+        }
+
+    # Inject user-provided URLs into the target list
+    if user_urls:
+        print(f"[*][Partial Recon] Adding {len(user_urls)} user-provided URLs to crawl targets")
+        for url in user_urls:
+            if url not in recon_data["http_probe"]["by_url"]:
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                recon_data["http_probe"]["by_url"][url] = {
+                    "url": url,
+                    "host": parsed.netloc.split(":")[0],
+                    "status_code": 200,
+                    "content_type": "text/html",
+                }
+
+    # Build target URLs as the UNION of every available source (deduplicated):
+    #   - BaseURLs from httpx (verified live, scheme already chosen)
+    #   - http(s)://<sub> for any Subdomain not yet covered by a BaseURL
+    #   - Custom URLs already merged into http_probe.by_url upstream
+    # Replaces the old "BaseURLs only" logic where freshly-discovered subdomains
+    # were silently dropped until httpx ran again.
+    ips, hostnames, _ = extract_targets_from_recon(recon_data)
+    target_urls = build_target_urls(hostnames, ips, recon_data, scan_all_ips=False)
+
+    # target_domains is the unique-host set Katana needs for in-scope filtering.
+    target_domains = set()
+    from urllib.parse import urlparse
+    for url in target_urls:
+        try:
+            host = urlparse(url).hostname
+            if host:
+                target_domains.add(host)
+        except Exception:
+            pass
+
+    # Ensure all target hostnames are in subdomains list for graph scope filtering
+    existing_subs = set(recon_data.get("subdomains", []))
+    for host in target_domains:
+        if host not in existing_subs:
+            existing_subs.add(host)
+    recon_data["subdomains"] = list(existing_subs)
+
+    if not target_urls:
+        print("[!][Partial Recon] No URLs to crawl (graph has no BaseURLs, Subdomains, or DNS records).")
+        print("[!][Partial Recon] Run Subdomain Discovery or HTTP Probing first, or provide URLs manually.")
+        sys.exit(1)
+
+    print(f"[+][Partial Recon] Found {len(target_urls)} URLs to crawl")
+
+    # Extract Katana settings
+    KATANA_DOCKER_IMAGE = settings.get('KATANA_DOCKER_IMAGE', 'projectdiscovery/katana:latest')
+    KATANA_DEPTH = settings.get('KATANA_DEPTH', 2)
+    KATANA_MAX_URLS = settings.get('KATANA_MAX_URLS', 300)
+    KATANA_RATE_LIMIT = settings.get('KATANA_RATE_LIMIT', 50)
+    KATANA_TIMEOUT = settings.get('KATANA_TIMEOUT', 3600)
+    KATANA_JS_CRAWL = settings.get('KATANA_JS_CRAWL', True)
+    KATANA_PARAMS_ONLY = settings.get('KATANA_PARAMS_ONLY', False)
+    KATANA_CUSTOM_HEADERS = merge_auth_headers(settings.get('KATANA_CUSTOM_HEADERS', []), settings, sorted(target_domains))
+    KATANA_EXCLUDE_PATTERNS = settings.get('KATANA_EXCLUDE_PATTERNS', [])
+    KATANA_PARALLELISM = settings.get('KATANA_PARALLELISM', 5)
+    KATANA_CONCURRENCY = settings.get('KATANA_CONCURRENCY', 10)
+
+    # Pull Docker image
+    print(f"[*][Partial Recon] Pulling Katana Docker image: {KATANA_DOCKER_IMAGE}")
+    pull_katana_docker_image(KATANA_DOCKER_IMAGE)
+
+    # Run Katana crawler (ONLY Katana -- not the full resource_enum pipeline)
+    print(f"[*][Partial Recon] Running Katana crawler on {len(target_urls)} URLs...")
+    katana_urls, katana_meta = run_katana_crawler(
+        target_urls,
+        KATANA_DOCKER_IMAGE,
+        KATANA_DEPTH,
+        KATANA_MAX_URLS,
+        KATANA_RATE_LIMIT,
+        KATANA_TIMEOUT,
+        KATANA_JS_CRAWL,
+        KATANA_PARAMS_ONLY,
+        target_domains,
+        KATANA_CUSTOM_HEADERS,
+        KATANA_EXCLUDE_PATTERNS,
+        KATANA_PARALLELISM,
+        KATANA_CONCURRENCY,
+    )
+    print(f"[+][Partial Recon] Katana found {len(katana_urls)} URLs")
+
+    # Organize discovered URLs into by_base_url structure
+    organized_data = organize_endpoints(katana_urls)
+
+    # Mark all endpoints with sources=['katana']
+    for base_url, base_data in organized_data['by_base_url'].items():
+        for path, endpoint in base_data['endpoints'].items():
+            endpoint['sources'] = ['katana']
+
+    # Build resource_enum result structure (same shape as full pipeline output)
+    result = dict(recon_data)
+    result["resource_enum"] = {
+        "by_base_url": organized_data['by_base_url'],
+        "forms": organized_data.get('forms', []),
+        "jsluice_secrets": [],
+        "scan_metadata": {
+            "katana_total": len(katana_urls),
+            "external_domains": katana_meta.get("external_domains", []),
+        },
+        "summary": {
+            "total_endpoints": sum(
+                len(bd['endpoints']) for bd in organized_data['by_base_url'].values()
+            ),
+            "total_base_urls": len(organized_data['by_base_url']),
+        },
+        "external_domains": katana_meta.get("external_domains", []),
+    }
+
+    # Update the graph database
+    print(f"[*][Partial Recon] Updating graph database...")
+    try:
+        from graph_db import Neo4jClient
+        with Neo4jClient() as graph_client:
+            if graph_client.verify_connection():
+                stats = graph_client.update_graph_from_resource_enum(
+                    recon_data=result,
+                    user_id=user_id,
+                    project_id=project_id,
+                )
+
+                # Link user-provided URLs to graph
+                if user_urls:
+                    from urllib.parse import urlparse as _urlparse
+                    driver = graph_client.driver
+                    with driver.session() as session:
+                        if url_attach_to:
+                            # Attached: link crawled BaseURLs to selected BaseURL via DISCOVERED_FROM
+                            for url in user_urls:
+                                parsed = _urlparse(url)
+                                base_url = f"{parsed.scheme}://{parsed.netloc}"
+                                session.run(
+                                    """
+                                    MATCH (parent:BaseURL {url: $parent_url, user_id: $uid, project_id: $pid})
+                                    MERGE (b:BaseURL {url: $url, user_id: $uid, project_id: $pid})
+                                    ON CREATE SET b.source = 'partial_recon_user_input',
+                                                  b.host = $host,
+                                                  b.updated_at = datetime()
+                                    MERGE (b)-[:DISCOVERED_FROM]->(parent)
+                                    """,
+                                    parent_url=url_attach_to, url=base_url,
+                                    uid=user_id, pid=project_id,
+                                    host=parsed.netloc.split(":")[0],
+                                )
+                            print(f"[+][Partial Recon] Linked user URLs to {url_attach_to} via DISCOVERED_FROM")
+                        elif needs_user_input:
+                            # Generic: create UserInput -> PRODUCED -> BaseURL
+                            user_input_id = str(uuid.uuid4())
+                            graph_client.create_user_input_node(
+                                domain=roots,
+                                user_input_data={
+                                    "id": user_input_id,
+                                    "input_type": "urls",
+                                    "values": user_urls,
+                                    "tool_id": "Katana",
+                                },
+                                user_id=user_id,
+                                project_id=project_id,
+                                root_orgs=root_orgs(roots),
+                            )
+                            for url in user_urls:
+                                parsed = _urlparse(url)
+                                base_url = f"{parsed.scheme}://{parsed.netloc}"
+                                session.run(
+                                    """
+                                    MERGE (b:BaseURL {url: $url, user_id: $uid, project_id: $pid})
+                                    ON CREATE SET b.source = 'partial_recon_user_input',
+                                                  b.host = $host,
+                                                  b.updated_at = datetime()
+                                    WITH b
+                                    MATCH (ui:UserInput {id: $ui_id, user_id: $uid, project_id: $pid})
+                                    MERGE (ui)-[:PRODUCED]->(b)
+                                    """,
+                                    ui_id=user_input_id, url=base_url,
+                                    uid=user_id, pid=project_id,
+                                    host=parsed.netloc.split(":")[0],
+                                )
+                            graph_client.update_user_input_status(
+                                user_input_id, "completed", stats
+                            )
+                            print(f"[+][Partial Recon] Created UserInput + linked user URLs via PRODUCED")
+
+                print(f"[+][Partial Recon] Graph updated successfully")
+                print(f"[+][Partial Recon] Stats: {json.dumps(stats, default=str)}")
+            else:
+                print("[!][Partial Recon] Neo4j not reachable, graph not updated")
+    except Exception as e:
+        print(f"[!][Partial Recon] Graph update failed: {e}")
+        raise
+
+    print(f"\n[+][Partial Recon] Katana crawling completed successfully")
+
+
+def run_hakrawler(config: dict) -> None:
+    """
+    Run partial resource enumeration using only Hakrawler (not the full
+    resource_enum pipeline). Hakrawler crawls BaseURLs to discover endpoints.
+
+    Same pattern as run_katana() -- runs just the hakrawler crawler +
+    organize_endpoints, then updates the graph via update_graph_from_resource_enum.
+    """
+    from recon.helpers.resource_enum import (
+        run_hakrawler_crawler,
+        pull_hakrawler_docker_image,
+        organize_endpoints,
+    )
+
+    roots = scope_roots(config)
+
+    user_id = os.environ.get("USER_ID", "")
+    project_id = os.environ.get("PROJECT_ID", "")
+
+    print(f"[*][Partial Recon] Loading project settings...")
+    settings = partial_settings(config)
+
+    # Force-enable Hakrawler since the user explicitly chose to run it
+    settings['HAKRAWLER_ENABLED'] = True
+
+    print(f"\n{'=' * 50}")
+    print(f"[*][Partial Recon] Resource Enumeration (Hakrawler)")
+    print(f"[*][Partial Recon] Roots: {', '.join(roots)}")
+    print(f"{'=' * 50}\n")
+
+    # Parse user targets -- Hakrawler accepts URLs
+    user_targets = config.get("user_targets") or {}
+    user_urls = []
+    url_attach_to = None
+    user_input_id = None
+
+    if user_targets:
+        for entry in user_targets.get("urls", []):
+            entry = entry.strip()
+            if entry and _is_valid_url(entry):
+                user_urls.append(entry)
+            elif entry:
+                print(f"[!][Partial Recon] Skipping invalid URL: {entry}")
+
+        url_attach_to = user_targets.get("url_attach_to")
+
+    if user_urls:
+        print(f"[+][Partial Recon] Validated {len(user_urls)} custom URLs")
+        if url_attach_to:
+            print(f"[+][Partial Recon] URLs will be attached to BaseURL: {url_attach_to}")
+        else:
+            print(f"[+][Partial Recon] URLs will be tracked via UserInput (generic)")
+
+    # Track whether we need a UserInput node (created after scan succeeds, not before)
+    needs_user_input = bool(user_urls and not url_attach_to)
+
+    # Build target URLs from Neo4j graph (or start empty if user unchecked graph targets)
+    include_graph = config.get("include_graph_targets", True)
+    if include_graph:
+        print(f"[*][Partial Recon] Querying graph for targets (BaseURLs)...")
+        recon_data = _build_http_probe_data_from_graph(
+            roots, user_id, project_id,
+            include_root_domain=_should_include_root_domain(settings),
+            domain_groups=config.get("domain_groups"),
+        )
+    else:
+        print(f"[*][Partial Recon] Skipping graph targets (user opted out)")
+        recon_data = {
+            "domain": roots[0] if roots else "",
+            "domains": roots,
+            "subdomains": [],
+            "http_probe": {
+                "by_url": {},
+            },
+        }
+
+    # Inject user-provided URLs into the target list
+    if user_urls:
+        print(f"[*][Partial Recon] Adding {len(user_urls)} user-provided URLs to crawl targets")
+        for url in user_urls:
+            if url not in recon_data["http_probe"]["by_url"]:
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                recon_data["http_probe"]["by_url"][url] = {
+                    "url": url,
+                    "host": parsed.netloc.split(":")[0],
+                    "status_code": 200,
+                    "content_type": "text/html",
+                }
+
+    # Union target-builder (see Katana for full rationale): BaseURLs ∪ uncovered
+    # Subdomains ∪ user URLs, deduplicated. Uncovered subs get both schemes.
+    ips, hostnames, _ = extract_targets_from_recon(recon_data)
+    target_urls = build_target_urls(hostnames, ips, recon_data, scan_all_ips=False)
+
+    target_domains = set()
+    from urllib.parse import urlparse
+    for url in target_urls:
+        try:
+            host = urlparse(url).hostname
+            if host:
+                target_domains.add(host)
+        except Exception:
+            pass
+
+    existing_subs = set(recon_data.get("subdomains", []))
+    for host in target_domains:
+        if host not in existing_subs:
+            existing_subs.add(host)
+    recon_data["subdomains"] = list(existing_subs)
+
+    if not target_urls:
+        print("[!][Partial Recon] No URLs to crawl (graph has no BaseURLs, Subdomains, or DNS records).")
+        print("[!][Partial Recon] Run Subdomain Discovery or HTTP Probing first, or provide URLs manually.")
+        sys.exit(1)
+
+    print(f"[+][Partial Recon] Found {len(target_urls)} URLs to crawl")
+
+    # Extract Hakrawler settings
+    HAKRAWLER_DOCKER_IMAGE = settings.get('HAKRAWLER_DOCKER_IMAGE', 'jauderho/hakrawler:latest')
+    HAKRAWLER_DEPTH = settings.get('HAKRAWLER_DEPTH', 2)
+    HAKRAWLER_THREADS = settings.get('HAKRAWLER_THREADS', 5)
+    HAKRAWLER_TIMEOUT = settings.get('HAKRAWLER_TIMEOUT', 30)
+    HAKRAWLER_MAX_URLS = settings.get('HAKRAWLER_MAX_URLS', 500)
+    HAKRAWLER_INCLUDE_SUBS = settings.get('HAKRAWLER_INCLUDE_SUBS', False)
+    HAKRAWLER_INSECURE = settings.get('HAKRAWLER_INSECURE', True)
+    HAKRAWLER_CUSTOM_HEADERS = merge_auth_headers(settings.get('HAKRAWLER_CUSTOM_HEADERS', []), settings, sorted(target_domains))
+
+    # Pull Docker image
+    print(f"[*][Partial Recon] Pulling Hakrawler Docker image: {HAKRAWLER_DOCKER_IMAGE}")
+    pull_hakrawler_docker_image(HAKRAWLER_DOCKER_IMAGE)
+
+    # The graph-built probe data has no per-host signal, so the Jev seed order keeps
+    # the alphabetical list here; the call only says so.
+    hakrawler_seeds = target_urls
+    if settings.get('AI_IN_PIPELINE') and settings.get('HAKRAWLER_JEV_SEED_ORDER'):
+        from recon.helpers.ai_planner.crawl_seed_order import hakrawler_seed_order
+        hakrawler_seeds = hakrawler_seed_order(target_urls, recon_data, partial=True)
+
+    # Run Hakrawler crawler
+    print(f"[*][Partial Recon] Running Hakrawler crawler on {len(target_urls)} URLs...")
+    hakrawler_urls, hakrawler_meta = run_hakrawler_crawler(
+        hakrawler_seeds,
+        HAKRAWLER_DOCKER_IMAGE,
+        HAKRAWLER_DEPTH,
+        HAKRAWLER_THREADS,
+        HAKRAWLER_TIMEOUT,
+        HAKRAWLER_MAX_URLS,
+        HAKRAWLER_INCLUDE_SUBS,
+        HAKRAWLER_INSECURE,
+        target_domains,
+        HAKRAWLER_CUSTOM_HEADERS,
+        # The full pipeline filters Hakrawler with the shared crawl excludes too.
+        settings.get('KATANA_EXCLUDE_PATTERNS', []),
+        settings.get('HAKRAWLER_PARALLELISM', 4),
+    )
+    print(f"[+][Partial Recon] Hakrawler found {len(hakrawler_urls)} URLs")
+
+    # Organize discovered URLs into by_base_url structure
+    organized_data = organize_endpoints(hakrawler_urls)
+
+    # Mark all endpoints with sources=['hakrawler']
+    for base_url, base_data in organized_data['by_base_url'].items():
+        for path, endpoint in base_data['endpoints'].items():
+            endpoint['sources'] = ['hakrawler']
+
+    # Build resource_enum result structure (same as full pipeline output)
+    result = dict(recon_data)
+    result["resource_enum"] = {
+        "by_base_url": organized_data['by_base_url'],
+        "forms": organized_data.get('forms', []),
+        "jsluice_secrets": [],
+        "scan_metadata": {
+            "hakrawler_total": len(hakrawler_urls),
+            "external_domains": hakrawler_meta.get("external_domains", []),
+        },
+        "summary": {
+            "total_endpoints": sum(
+                len(bd['endpoints']) for bd in organized_data['by_base_url'].values()
+            ),
+            "total_base_urls": len(organized_data['by_base_url']),
+        },
+        "external_domains": hakrawler_meta.get("external_domains", []),
+    }
+
+    # Update the graph database
+    print(f"[*][Partial Recon] Updating graph database...")
+    try:
+        from graph_db import Neo4jClient
+        with Neo4jClient() as graph_client:
+            if graph_client.verify_connection():
+                stats = graph_client.update_graph_from_resource_enum(
+                    recon_data=result,
+                    user_id=user_id,
+                    project_id=project_id,
+                )
+
+                # Link user-provided URLs to graph
+                if user_urls:
+                    from urllib.parse import urlparse as _urlparse
+                    driver = graph_client.driver
+                    with driver.session() as session:
+                        if url_attach_to:
+                            # Attached: link crawled BaseURLs to selected BaseURL via DISCOVERED_FROM
+                            for url in user_urls:
+                                parsed = _urlparse(url)
+                                base_url = f"{parsed.scheme}://{parsed.netloc}"
+                                session.run(
+                                    """
+                                    MATCH (parent:BaseURL {url: $parent_url, user_id: $uid, project_id: $pid})
+                                    MERGE (b:BaseURL {url: $url, user_id: $uid, project_id: $pid})
+                                    ON CREATE SET b.source = 'partial_recon_user_input',
+                                                  b.host = $host,
+                                                  b.updated_at = datetime()
+                                    MERGE (b)-[:DISCOVERED_FROM]->(parent)
+                                    """,
+                                    parent_url=url_attach_to, url=base_url,
+                                    uid=user_id, pid=project_id,
+                                    host=parsed.netloc.split(":")[0],
+                                )
+                            print(f"[+][Partial Recon] Linked user URLs to {url_attach_to} via DISCOVERED_FROM")
+                        elif needs_user_input:
+                            # Generic: create UserInput -> PRODUCED -> BaseURL
+                            user_input_id = str(uuid.uuid4())
+                            graph_client.create_user_input_node(
+                                domain=roots,
+                                user_input_data={
+                                    "id": user_input_id,
+                                    "input_type": "urls",
+                                    "values": user_urls,
+                                    "tool_id": "Hakrawler",
+                                },
+                                user_id=user_id,
+                                project_id=project_id,
+                                root_orgs=root_orgs(roots),
+                            )
+                            for url in user_urls:
+                                parsed = _urlparse(url)
+                                base_url = f"{parsed.scheme}://{parsed.netloc}"
+                                session.run(
+                                    """
+                                    MERGE (b:BaseURL {url: $url, user_id: $uid, project_id: $pid})
+                                    ON CREATE SET b.source = 'partial_recon_user_input',
+                                                  b.host = $host,
+                                                  b.updated_at = datetime()
+                                    WITH b
+                                    MATCH (ui:UserInput {id: $ui_id, user_id: $uid, project_id: $pid})
+                                    MERGE (ui)-[:PRODUCED]->(b)
+                                    """,
+                                    ui_id=user_input_id, url=base_url,
+                                    uid=user_id, pid=project_id,
+                                    host=parsed.netloc.split(":")[0],
+                                )
+                            graph_client.update_user_input_status(
+                                user_input_id, "completed", stats
+                            )
+                            print(f"[+][Partial Recon] Created UserInput + linked user URLs via PRODUCED")
+
+                print(f"[+][Partial Recon] Graph updated successfully")
+                print(f"[+][Partial Recon] Stats: {json.dumps(stats, default=str)}")
+            else:
+                print("[!][Partial Recon] Neo4j not reachable, graph not updated")
+    except Exception as e:
+        print(f"[!][Partial Recon] Graph update failed: {e}")
+        raise
+
+    print(f"\n[+][Partial Recon] Resource enumeration (Hakrawler) completed successfully")
+
+
+def run_zap_ajax_spider_partial(config: dict) -> None:
+    """
+    Run partial resource enumeration using only ZAP Ajax Spider.
+    Browser-discovered URLs are written through update_graph_from_resource_enum
+    using the raw resource_enum by_base_url shape.
+    """
+    from recon.helpers.resource_enum import (
+        pull_zap_ajax_docker_image,
+        run_zap_ajax_spider,
+        merge_zap_ajax_into_by_base_url,
+    )
+
+    roots = scope_roots(config)
+
+    user_id = os.environ.get("USER_ID", "")
+    project_id = os.environ.get("PROJECT_ID", "")
+
+    print(f"[*][Partial Recon] Loading project settings...")
+    settings = partial_settings(config)
+
+    # Force-enable ZAP Ajax Spider since the user explicitly chose to run it
+    settings["ZAP_AJAX_SPIDER_ENABLED"] = True
+
+    print(f"\n{'=' * 50}")
+    print(f"[*][Partial Recon] Resource Enumeration (ZAP Ajax Spider)")
+    print(f"[*][Partial Recon] Roots: {', '.join(roots)}")
+    print(f"{'=' * 50}\n")
+
+    # Parse user targets -- ZAP Ajax Spider accepts URLs
+    user_targets = config.get("user_targets") or {}
+    user_urls = []
+    url_attach_to = None
+    user_input_id = None
+
+    if user_targets:
+        for entry in user_targets.get("urls", []):
+            entry = entry.strip()
+            if entry and _is_valid_url(entry):
+                user_urls.append(entry)
+            elif entry:
+                print(f"[!][Partial Recon] Skipping invalid URL: {entry}")
+
+        url_attach_to = user_targets.get("url_attach_to")
+
+    if user_urls:
+        print(f"[+][Partial Recon] Validated {len(user_urls)} custom URLs")
+        if url_attach_to:
+            print(f"[+][Partial Recon] URLs will be attached to BaseURL: {url_attach_to}")
+        else:
+            print(f"[+][Partial Recon] URLs will be tracked via UserInput (generic)")
+
+    # Track whether we need a UserInput node (created after scan succeeds, not before)
+    needs_user_input = bool(user_urls and not url_attach_to)
+
+    include_root_domain = _should_include_root_domain(settings)
+    groups = config.get("domain_groups")
+    if groups is None:
+        included_roots = set(roots) if include_root_domain else set()
+    else:
+        included_roots = {r for r in roots if include_root_for(r, groups)}
+
+    def _host_in_requested_domain_scope(host: str) -> bool:
+        # Delegates to the shared helper so IP-mode projects are handled
+        # consistently with the rest of the pipeline. The synthetic
+        # `ip-targets.<project_id>` pseudo-domain is bypassed in IP mode.
+        return _is_host_in_scope(host, settings, roots, included_roots)
+
+    def _url_in_requested_domain_scope(url: str, entry_host: str = "") -> bool:
+        from urllib.parse import urlparse
+        host = entry_host or ""
+        if not host:
+            try:
+                host = urlparse(url).hostname or ""
+            except Exception:
+                host = ""
+        return _host_in_requested_domain_scope(host)
+
+    include_graph = config.get("include_graph_targets", True)
+    if include_graph:
+        print(f"[*][Partial Recon] Querying graph for targets (BaseURLs)...")
+        recon_data = _build_http_probe_data_from_graph(
+            roots,
+            user_id,
+            project_id,
+            include_root_domain=include_root_domain,
+            domain_groups=groups,
+        )
+        by_url = recon_data.get("http_probe", {}).get("by_url", {})
+        filtered_by_url = {
+            url: data
+            for url, data in by_url.items()
+            if _url_in_requested_domain_scope(url, data.get("host", ""))
+        }
+        pruned_count = len(by_url) - len(filtered_by_url)
+        if pruned_count:
+            print(f"[*][Partial Recon] Pruned {pruned_count} out-of-scope graph BaseURL(s)")
+        recon_data["http_probe"]["by_url"] = filtered_by_url
+    else:
+        print(f"[*][Partial Recon] Skipping graph targets (user opted out)")
+        recon_data = {
+            "domain": roots[0] if roots else "",
+            "domains": roots,
+            "subdomains": [],
+            "http_probe": {
+                "by_url": {},
+            },
+            "metadata": {"include_root_domain": bool(roots) and roots[0] in included_roots},
+        }
+
+    # Inject user-provided URLs into the target list
+    if user_urls:
+        print(f"[*][Partial Recon] Adding {len(user_urls)} user-provided URLs to crawl targets")
+        for url in user_urls:
+            if url not in recon_data["http_probe"]["by_url"]:
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                recon_data["http_probe"]["by_url"][url] = {
+                    "url": url,
+                    "host": parsed.netloc.split(":")[0],
+                    "status_code": 200,
+                    "content_type": "text/html",
+                }
+
+    ips, hostnames, _ = extract_targets_from_recon(recon_data)
+    target_urls = build_target_urls(hostnames, ips, recon_data, scan_all_ips=False)
+
+    target_domains = set()
+    from urllib.parse import urlparse
+    for url in target_urls:
+        try:
+            host = urlparse(url).hostname
+            if host:
+                target_domains.add(host)
+        except Exception:
+            pass
+
+    # Ensure all target hostnames are in subdomains list for graph scope filtering
+    existing_subs = set(recon_data.get("subdomains", []))
+    for host in target_domains:
+        if host not in existing_subs:
+            existing_subs.add(host)
+    recon_data["subdomains"] = list(existing_subs)
+
+    if not target_urls:
+        print("[!][Partial Recon] No URLs to crawl (graph has no BaseURLs, Subdomains, or DNS records).")
+        print("[!][Partial Recon] Run Subdomain Discovery or HTTP Probing first, or provide URLs manually.")
+        sys.exit(1)
+
+    print(f"[+][Partial Recon] Found {len(target_urls)} URLs to crawl")
+
+    # Extract ZAP Ajax Spider settings
+    ZAP_AJAX_SPIDER_DOCKER_IMAGE = settings.get("ZAP_AJAX_SPIDER_DOCKER_IMAGE", "ghcr.io/zaproxy/zaproxy:stable")
+    ZAP_AJAX_SPIDER_SEED_MODE = settings.get("ZAP_AJAX_SPIDER_SEED_MODE", "base_urls")
+    ZAP_AJAX_SPIDER_MAX_DURATION = settings.get("ZAP_AJAX_SPIDER_MAX_DURATION", 10)
+    ZAP_AJAX_SPIDER_MAX_CRAWL_DEPTH = settings.get("ZAP_AJAX_SPIDER_MAX_CRAWL_DEPTH", 5)
+    ZAP_AJAX_SPIDER_MAX_CRAWL_STATES = settings.get("ZAP_AJAX_SPIDER_MAX_CRAWL_STATES", 0)
+    ZAP_AJAX_SPIDER_NUMBER_OF_BROWSERS = settings.get("ZAP_AJAX_SPIDER_NUMBER_OF_BROWSERS", 1)
+    ZAP_AJAX_SPIDER_BROWSER_ID = settings.get("ZAP_AJAX_SPIDER_BROWSER_ID", "firefox-headless")
+    ZAP_AJAX_SPIDER_EVENT_WAIT = settings.get("ZAP_AJAX_SPIDER_EVENT_WAIT", 1000)
+    ZAP_AJAX_SPIDER_RELOAD_WAIT = settings.get("ZAP_AJAX_SPIDER_RELOAD_WAIT", 1000)
+    ZAP_AJAX_SPIDER_CLICK_DEFAULT_ELEMS = settings.get("ZAP_AJAX_SPIDER_CLICK_DEFAULT_ELEMS", True)
+    ZAP_AJAX_SPIDER_CLICK_ELEMS_ONCE = settings.get("ZAP_AJAX_SPIDER_CLICK_ELEMS_ONCE", True)
+    ZAP_AJAX_SPIDER_RANDOM_INPUTS = settings.get("ZAP_AJAX_SPIDER_RANDOM_INPUTS", False)
+    ZAP_AJAX_SPIDER_LOGOUT_AVOIDANCE = settings.get("ZAP_AJAX_SPIDER_LOGOUT_AVOIDANCE", True)
+    ZAP_AJAX_SPIDER_SCOPE_CHECK = settings.get("ZAP_AJAX_SPIDER_SCOPE_CHECK", "Strict")
+    ZAP_AJAX_SPIDER_CUSTOM_HEADERS = merge_auth_headers(settings.get("ZAP_AJAX_SPIDER_CUSTOM_HEADERS", []), settings, sorted(target_domains))
+    ZAP_AJAX_SPIDER_EXCLUDE_PATTERNS = settings.get("ZAP_AJAX_SPIDER_EXCLUDE_PATTERNS", [])
+    ZAP_AJAX_SPIDER_MAX_URLS = settings.get("ZAP_AJAX_SPIDER_MAX_URLS", 1000)
+    ZAP_AJAX_SPIDER_PARALLELISM = settings.get("ZAP_AJAX_SPIDER_PARALLELISM", 1)
+
+    print(f"[*][ZAP Ajax] Docker image: {ZAP_AJAX_SPIDER_DOCKER_IMAGE}")
+    print(f"[*][ZAP Ajax] Seed mode: {ZAP_AJAX_SPIDER_SEED_MODE}")
+    print(f"[*][ZAP Ajax] Max duration: {ZAP_AJAX_SPIDER_MAX_DURATION} min")
+    print(f"[*][ZAP Ajax] Max crawl depth: {ZAP_AJAX_SPIDER_MAX_CRAWL_DEPTH}")
+    print(f"[*][ZAP Ajax] Max crawl states: {ZAP_AJAX_SPIDER_MAX_CRAWL_STATES}")
+    print(f"[*][ZAP Ajax] Browsers: {ZAP_AJAX_SPIDER_NUMBER_OF_BROWSERS} ({ZAP_AJAX_SPIDER_BROWSER_ID})")
+    print(f"[*][ZAP Ajax] Event/reload wait: {ZAP_AJAX_SPIDER_EVENT_WAIT}ms/{ZAP_AJAX_SPIDER_RELOAD_WAIT}ms")
+    print(f"[*][ZAP Ajax] Click defaults: {ZAP_AJAX_SPIDER_CLICK_DEFAULT_ELEMS}")
+    print(f"[*][ZAP Ajax] Click once: {ZAP_AJAX_SPIDER_CLICK_ELEMS_ONCE}")
+    print(f"[*][ZAP Ajax] Random inputs: {ZAP_AJAX_SPIDER_RANDOM_INPUTS}")
+    print(f"[*][ZAP Ajax] Logout avoidance: {ZAP_AJAX_SPIDER_LOGOUT_AVOIDANCE}")
+    print(f"[*][ZAP Ajax] Scope check: {ZAP_AJAX_SPIDER_SCOPE_CHECK}")
+    print(f"[*][ZAP Ajax] Max URLs: {ZAP_AJAX_SPIDER_MAX_URLS}")
+    print(f"[*][ZAP Ajax] Parallelism: {ZAP_AJAX_SPIDER_PARALLELISM}")
+    print(f"[*][ZAP Ajax] Custom headers: {len(ZAP_AJAX_SPIDER_CUSTOM_HEADERS)}")
+    print(f"[*][ZAP Ajax] Exclude patterns: {len(ZAP_AJAX_SPIDER_EXCLUDE_PATTERNS)}")
+
+    zap_ajax_seed_urls = list(target_urls)
+    if ZAP_AJAX_SPIDER_SEED_MODE == "base_urls_and_endpoints" and include_graph:
+        try:
+            from graph_db import Neo4jClient
+            with Neo4jClient() as graph_client:
+                if graph_client.verify_connection():
+                    driver = graph_client.driver
+                    with driver.session() as session:
+                        result = session.run(
+                            """
+                            MATCH (e:Endpoint {user_id: $uid, project_id: $pid})
+                            WHERE NOT """ + declared_only_unsafe("e") + """
+                            RETURN DISTINCT e.baseurl + e.path AS url
+                            """,
+                            uid=user_id,
+                            pid=project_id,
+                        )
+                        for record in result:
+                            url = record["url"]
+                            if url and _url_in_requested_domain_scope(url):
+                                zap_ajax_seed_urls.append(url)
+                else:
+                    print("[!][ZAP Ajax] Neo4j not reachable, skipping endpoint seed expansion")
+        except Exception as e:
+            print(f"[!][ZAP Ajax] Failed to fetch endpoint seeds from graph: {e}")
+
+    zap_ajax_seed_urls = sorted(set(zap_ajax_seed_urls))
+
+    print(f"[*][Partial Recon] Pulling ZAP Ajax Docker image: {ZAP_AJAX_SPIDER_DOCKER_IMAGE}")
+    if not pull_zap_ajax_docker_image(ZAP_AJAX_SPIDER_DOCKER_IMAGE):
+        print("[!][ZAP Ajax] Failed to pull Docker image; continuing so the helper can report runtime errors")
+
+    print(f"[*][Partial Recon] Running ZAP Ajax Spider on {len(zap_ajax_seed_urls)} seed URLs...")
+    zap_ajax_urls, zap_ajax_meta = run_zap_ajax_spider(
+        zap_ajax_seed_urls,
+        ZAP_AJAX_SPIDER_DOCKER_IMAGE,
+        allowed_hosts=target_domains,
+        custom_headers=ZAP_AJAX_SPIDER_CUSTOM_HEADERS,
+        exclude_patterns=ZAP_AJAX_SPIDER_EXCLUDE_PATTERNS,
+        max_urls=ZAP_AJAX_SPIDER_MAX_URLS,
+        max_duration=ZAP_AJAX_SPIDER_MAX_DURATION,
+        max_crawl_depth=ZAP_AJAX_SPIDER_MAX_CRAWL_DEPTH,
+        max_crawl_states=ZAP_AJAX_SPIDER_MAX_CRAWL_STATES,
+        number_of_browsers=ZAP_AJAX_SPIDER_NUMBER_OF_BROWSERS,
+        browser_id=ZAP_AJAX_SPIDER_BROWSER_ID,
+        event_wait=ZAP_AJAX_SPIDER_EVENT_WAIT,
+        reload_wait=ZAP_AJAX_SPIDER_RELOAD_WAIT,
+        click_default_elems=ZAP_AJAX_SPIDER_CLICK_DEFAULT_ELEMS,
+        click_elems_once=ZAP_AJAX_SPIDER_CLICK_ELEMS_ONCE,
+        random_inputs=ZAP_AJAX_SPIDER_RANDOM_INPUTS,
+        logout_avoidance=ZAP_AJAX_SPIDER_LOGOUT_AVOIDANCE,
+        scope_check=ZAP_AJAX_SPIDER_SCOPE_CHECK,
+        parallelism=ZAP_AJAX_SPIDER_PARALLELISM,
+    )
+    print(f"[+][Partial Recon] ZAP Ajax Spider found {len(zap_ajax_urls)} URLs")
+
+    by_base_url, zap_ajax_stats = merge_zap_ajax_into_by_base_url(zap_ajax_urls, {})
+
+    result = dict(recon_data)
+    result["resource_enum"] = {
+        "by_base_url": by_base_url,
+        "forms": [],
+        "jsluice_secrets": [],
+        "scan_metadata": {
+            "zap_ajax_spider_total": zap_ajax_stats.get("zap_ajax_spider_total", 0),
+            "zap_ajax_spider_urls_found": len(zap_ajax_urls),
+            "zap_ajax_spider_stats": zap_ajax_stats,
+            "zap_ajax_spider_meta": zap_ajax_meta,
+        },
+        "summary": {
+            "total_endpoints": sum(len(bd["endpoints"]) for bd in by_base_url.values()),
+            "total_base_urls": len(by_base_url),
+        },
+        "external_domains": zap_ajax_meta.get("external_domains", []),
+    }
+
+    # Update the graph database
+    print(f"[*][Partial Recon] Updating graph database...")
+    try:
+        from graph_db import Neo4jClient
+        with Neo4jClient() as graph_client:
+            if graph_client.verify_connection():
+                stats = graph_client.update_graph_from_resource_enum(
+                    recon_data=result,
+                    user_id=user_id,
+                    project_id=project_id,
+                )
+
+                # Link user-provided URLs to graph
+                if user_urls:
+                    from urllib.parse import urlparse as _urlparse
+                    driver = graph_client.driver
+                    with driver.session() as session:
+                        if url_attach_to:
+                            # Attached: link crawled BaseURLs to selected BaseURL via DISCOVERED_FROM
+                            for url in user_urls:
+                                parsed = _urlparse(url)
+                                base_url = f"{parsed.scheme}://{parsed.netloc}"
+                                session.run(
+                                    """
+                                    MATCH (parent:BaseURL {url: $parent_url, user_id: $uid, project_id: $pid})
+                                    MERGE (b:BaseURL {url: $url, user_id: $uid, project_id: $pid})
+                                    ON CREATE SET b.source = 'partial_recon_user_input',
+                                                  b.host = $host,
+                                                  b.updated_at = datetime()
+                                    MERGE (b)-[:DISCOVERED_FROM]->(parent)
+                                    """,
+                                    parent_url=url_attach_to, url=base_url,
+                                    uid=user_id, pid=project_id,
+                                    host=parsed.netloc.split(":")[0],
+                                )
+                            print(f"[+][Partial Recon] Linked user URLs to {url_attach_to} via DISCOVERED_FROM")
+                        elif needs_user_input:
+                            # Generic: create UserInput -> PRODUCED -> BaseURL
+                            user_input_id = str(uuid.uuid4())
+                            graph_client.create_user_input_node(
+                                domain=roots,
+                                user_input_data={
+                                    "id": user_input_id,
+                                    "input_type": "urls",
+                                    "values": user_urls,
+                                    "tool_id": "ZapAjaxSpider",
+                                },
+                                user_id=user_id,
+                                project_id=project_id,
+                                root_orgs=root_orgs(roots),
+                            )
+                            for url in user_urls:
+                                parsed = _urlparse(url)
+                                base_url = f"{parsed.scheme}://{parsed.netloc}"
+                                session.run(
+                                    """
+                                    MERGE (b:BaseURL {url: $url, user_id: $uid, project_id: $pid})
+                                    ON CREATE SET b.source = 'partial_recon_user_input',
+                                                  b.host = $host,
+                                                  b.updated_at = datetime()
+                                    WITH b
+                                    MATCH (ui:UserInput {id: $ui_id, user_id: $uid, project_id: $pid})
+                                    MERGE (ui)-[:PRODUCED]->(b)
+                                    """,
+                                    ui_id=user_input_id, url=base_url,
+                                    uid=user_id, pid=project_id,
+                                    host=parsed.netloc.split(":")[0],
+                                )
+                            graph_client.update_user_input_status(
+                                user_input_id, "completed", stats
+                            )
+                            print(f"[+][Partial Recon] Created UserInput + linked user URLs via PRODUCED")
+
+                print(f"[+][Partial Recon] Graph updated successfully")
+                print(f"[+][Partial Recon] Stats: {json.dumps(stats, default=str)}")
+            else:
+                print("[!][Partial Recon] Neo4j not reachable, graph not updated")
+    except Exception as e:
+        print(f"[!][Partial Recon] Graph update failed: {e}")
+        raise
+
+    print(f"\n[+][Partial Recon] Resource enumeration (ZAP Ajax Spider) completed successfully")
+
+
+def run_ffuf(config: dict) -> None:
+    """
+    Run partial resource enumeration using only FFuf directory fuzzer.
+    FFuf fuzzes BaseURLs to discover hidden endpoints, directories, and files.
+
+    Same pattern as run_hakrawler() -- takes BaseURL inputs, runs the fuzzer,
+    then updates the graph via update_graph_from_resource_enum.
+    """
+    from recon.helpers.resource_enum import (
+        run_ffuf_discovery,
+        pull_ffuf_binary_check,
+        merge_ffuf_into_by_base_url,
+        select_base_paths,
+    )
+
+    roots = scope_roots(config)
+
+    user_id = os.environ.get("USER_ID", "")
+    project_id = os.environ.get("PROJECT_ID", "")
+
+    print(f"[*][Partial Recon] Loading project settings...")
+    settings = partial_settings(config)
+
+    # Force-enable FFuf since the user explicitly chose to run it
+    settings['FFUF_ENABLED'] = True
+
+    print(f"\n{'=' * 50}")
+    print(f"[*][Partial Recon] Directory Fuzzing (FFuf)")
+    print(f"[*][Partial Recon] Roots: {', '.join(roots)}")
+    print(f"{'=' * 50}\n")
+
+    # Parse user targets -- FFuf accepts URLs
+    user_targets = config.get("user_targets") or {}
+    user_urls = []
+    url_attach_to = None
+    user_input_id = None
+
+    if user_targets:
+        for entry in user_targets.get("urls", []):
+            entry = entry.strip()
+            if entry and _is_valid_url(entry):
+                user_urls.append(entry)
+            elif entry:
+                print(f"[!][Partial Recon] Skipping invalid URL: {entry}")
+
+        url_attach_to = user_targets.get("url_attach_to")
+
+    if user_urls:
+        print(f"[+][Partial Recon] Validated {len(user_urls)} custom URLs")
+        if url_attach_to:
+            print(f"[+][Partial Recon] URLs will be attached to BaseURL: {url_attach_to}")
+        else:
+            print(f"[+][Partial Recon] URLs will be tracked via UserInput (generic)")
+
+    # Track whether we need a UserInput node (created after scan succeeds, not before)
+    needs_user_input = bool(user_urls and not url_attach_to)
+
+    # Build target URLs from Neo4j graph (or start empty if user unchecked graph targets)
+    include_graph = config.get("include_graph_targets", True)
+    if include_graph:
+        print(f"[*][Partial Recon] Querying graph for targets (BaseURLs)...")
+        recon_data = _build_http_probe_data_from_graph(
+            roots, user_id, project_id,
+            include_root_domain=_should_include_root_domain(settings),
+            domain_groups=config.get("domain_groups"),
+        )
+    else:
+        print(f"[*][Partial Recon] Skipping graph targets (user opted out)")
+        recon_data = {
+            "domain": roots[0] if roots else "",
+            "domains": roots,
+            "subdomains": [],
+            "http_probe": {
+                "by_url": {},
+            },
+        }
+
+    # Inject user-provided URLs into the target list
+    if user_urls:
+        print(f"[*][Partial Recon] Adding {len(user_urls)} user-provided URLs to fuzz targets")
+        for url in user_urls:
+            if url not in recon_data["http_probe"]["by_url"]:
+                from urllib.parse import urlparse
+                parsed = urlparse(url)
+                recon_data["http_probe"]["by_url"][url] = {
+                    "url": url,
+                    "host": parsed.netloc.split(":")[0],
+                    "status_code": 200,
+                    "content_type": "text/html",
+                }
+
+    # Union target-builder: BaseURLs ∪ uncovered Subdomains ∪ user URLs (see
+    # Katana for full rationale). New subs get both schemes; httpx-covered hosts
+    # keep only the verified scheme.
+    ips, hostnames, _ = extract_targets_from_recon(recon_data)
+    target_urls = build_target_urls(hostnames, ips, recon_data, scan_all_ips=False)
+
+    target_domains = set()
+    from urllib.parse import urlparse
+    for url in target_urls:
+        try:
+            host = urlparse(url).hostname
+            if host:
+                target_domains.add(host)
+        except Exception:
+            pass
+
+    existing_subs = set(recon_data.get("subdomains", []))
+    for host in target_domains:
+        if host not in existing_subs:
+            existing_subs.add(host)
+    recon_data["subdomains"] = list(existing_subs)
+
+    if not target_urls:
+        print("[!][Partial Recon] No URLs to fuzz (graph has no BaseURLs, Subdomains, or DNS records).")
+        print("[!][Partial Recon] Run Subdomain Discovery or HTTP Probing first, or provide URLs manually.")
+        sys.exit(1)
+
+    print(f"[+][Partial Recon] Found {len(target_urls)} URLs to fuzz")
+
+    # Extract FFuf settings
+    FFUF_WORDLIST = settings.get('FFUF_WORDLIST', '/usr/share/seclists/Discovery/Web-Content/common.txt')
+    FFUF_THREADS = settings.get('FFUF_THREADS', 40)
+    FFUF_RATE = settings.get('FFUF_RATE', 0)
+    FFUF_TIMEOUT = settings.get('FFUF_TIMEOUT', 10)
+    FFUF_MAX_TIME = settings.get('FFUF_MAX_TIME', 1800)
+    FFUF_MATCH_CODES = settings.get('FFUF_MATCH_CODES', [200, 201, 204, 301, 302, 307, 308, 401, 403, 405])
+    FFUF_FILTER_CODES = settings.get('FFUF_FILTER_CODES', [])
+    FFUF_FILTER_SIZE = settings.get('FFUF_FILTER_SIZE', '')
+    FFUF_EXTENSIONS = settings.get('FFUF_EXTENSIONS', [])
+    FFUF_RECURSION = settings.get('FFUF_RECURSION', False)
+    FFUF_RECURSION_DEPTH = settings.get('FFUF_RECURSION_DEPTH', 2)
+    FFUF_AUTO_CALIBRATE = settings.get('FFUF_AUTO_CALIBRATE', True)
+    FFUF_FOLLOW_REDIRECTS = settings.get('FFUF_FOLLOW_REDIRECTS', False)
+    FFUF_CUSTOM_HEADERS = merge_auth_headers(settings.get('FFUF_CUSTOM_HEADERS', []), settings, sorted(target_domains))
+    FFUF_SMART_FUZZ = settings.get('FFUF_SMART_FUZZ', True)
+    FFUF_SMART_FUZZ_MAX_BASE_PATHS = settings.get('FFUF_SMART_FUZZ_MAX_BASE_PATHS', 20)
+    FFUF_PARALLELISM = settings.get('FFUF_PARALLELISM', 20)
+    FFUF_AI_EXTENSIONS = settings.get('FFUF_AI_EXTENSIONS', False)
+    FFUF_AI_USE_JEV = settings.get('FFUF_AI_USE_JEV', False)
+    AI_PIPELINE_MODEL = settings.get('AI_PIPELINE_MODEL', 'claude-opus-4-6')
+
+    print(f"[*][Partial Recon] FFuf wordlist: {FFUF_WORDLIST}")
+    print(f"[*][Partial Recon] FFuf threads: {FFUF_THREADS}")
+    print(f"[*][Partial Recon] FFuf rate limit: {FFUF_RATE} req/s" if FFUF_RATE > 0 else "[*][Partial Recon] FFuf rate limit: unlimited")
+    print(f"[*][Partial Recon] FFuf timeout: {FFUF_TIMEOUT}s per request, {FFUF_MAX_TIME}s max")
+
+    # Check ffuf binary
+    if not pull_ffuf_binary_check():
+        print("[!][Partial Recon] ffuf binary not found in PATH")
+        sys.exit(1)
+
+    # Smart fuzz: query existing endpoints from graph for discovered base paths
+    discovered_base_paths = None
+    if FFUF_SMART_FUZZ and include_graph:
+        try:
+            from graph_db import Neo4jClient
+            with Neo4jClient() as gc:
+                if gc.verify_connection():
+                    with gc.driver.session() as session:
+                        result = session.run(
+                            """
+                            MATCH (e:Endpoint {user_id: $uid, project_id: $pid})
+                            WHERE NOT """ + declared_only_unsafe("e") + """
+                            RETURN collect(DISTINCT e.path) AS paths
+                            """,
+                            uid=user_id, pid=project_id,
+                        )
+                        record = result.single()
+                        if record:
+                            paths = record["paths"] or []
+                            base_paths = set()
+                            for path in paths:
+                                if not path:
+                                    continue
+                                parts = path.strip('/').split('/')
+                                if len(parts) >= 2:
+                                    base_paths.add('/'.join(parts[:2]))
+                                if len(parts) >= 1 and parts[0]:
+                                    base_paths.add(parts[0])
+                            if base_paths:
+                                from recon.helpers.ai_planner.ffuf_base_paths import ranker_for
+                                # No recon JSON in a partial run: the shadow records
+                                # stay in the capped log lines and the summary.
+                                discovered_base_paths = select_base_paths(
+                                    base_paths, FFUF_SMART_FUZZ_MAX_BASE_PATHS,
+                                    ranker=ranker_for(settings))
+                                print(f"[*][Partial Recon] Smart fuzz: targeting {len(discovered_base_paths)} discovered base paths")
+        except Exception as e:
+            print(f"[!][Partial Recon] Smart fuzz query failed: {e}")
+
+    effective_extensions = FFUF_EXTENSIONS
+    if FFUF_AI_EXTENSIONS:
+        from recon.helpers.ai_planner.ffuf_extensions import get_ai_extensions
+        ai_user_id = os.environ.get('USER_ID', '')
+        ai_project_id = os.environ.get('PROJECT_ID', '')
+        print(f"[*][Partial Recon][FFuf] AI extensions enabled, model={AI_PIPELINE_MODEL}")
+        print(f"[*][Partial Recon][FFuf] Querying AI for {len(target_urls)} target(s)...")
+        fp_cache: dict = {}
+        ai_per_target: dict = {}
+        for url in target_urls:
+            ai_per_target[url] = get_ai_extensions(
+                url, AI_PIPELINE_MODEL, max_extensions=6,
+                cache=fp_cache, user_id=ai_user_id, project_id=ai_project_id,
+                engine=('jev' if FFUF_AI_USE_JEV else 'llm'),
+            )
+        effective_extensions = sorted({e for exts in ai_per_target.values() for e in exts})
+        print(f"[*][Partial Recon][FFuf] AI selected {len(effective_extensions)} unique extensions: {effective_extensions}")
+        print(f"[*][Partial Recon][FFuf] Static FFUF_EXTENSIONS list ({FFUF_EXTENSIONS}) is being ignored.")
+
+    # Run FFuf discovery
+    print(f"[*][Partial Recon] Running FFuf directory fuzzing on {len(target_urls)} URLs...")
+    ffuf_results, ffuf_meta = run_ffuf_discovery(
+        target_urls,
+        FFUF_WORDLIST,
+        FFUF_THREADS,
+        FFUF_RATE,
+        FFUF_TIMEOUT,
+        FFUF_MAX_TIME,
+        FFUF_MATCH_CODES,
+        FFUF_FILTER_CODES,
+        FFUF_FILTER_SIZE,
+        effective_extensions,
+        FFUF_RECURSION,
+        FFUF_RECURSION_DEPTH,
+        FFUF_AUTO_CALIBRATE,
+        FFUF_CUSTOM_HEADERS,
+        FFUF_FOLLOW_REDIRECTS,
+        target_domains,
+        discovered_base_paths,
+        FFUF_PARALLELISM,
+    )
+    print(f"[+][Partial Recon] FFuf discovered {len(ffuf_results)} endpoints")
+
+    # Merge FFuf results into by_base_url structure
+    by_base_url = {}
+    ffuf_stats = {"ffuf_total": 0, "ffuf_new": 0, "ffuf_overlap": 0}
+    if ffuf_results:
+        by_base_url, ffuf_stats = merge_ffuf_into_by_base_url(ffuf_results, by_base_url)
+        print(f"[+][Partial Recon] FFuf total: {ffuf_stats['ffuf_total']} endpoints")
+        print(f"[+][Partial Recon] FFuf new: {ffuf_stats['ffuf_new']}")
+
+    # Build resource_enum result structure (same as full pipeline output)
+    result = dict(recon_data)
+    result["resource_enum"] = {
+        "by_base_url": by_base_url,
+        "forms": [],
+        "jsluice_secrets": [],
+        "scan_metadata": {
+            "ffuf_total": len(ffuf_results),
+            "external_domains": ffuf_meta.get("external_domains", []),
+        },
+        "summary": {
+            "total_endpoints": sum(
+                len(bd['endpoints']) for bd in by_base_url.values()
+            ),
+            "total_base_urls": len(by_base_url),
+        },
+        "external_domains": ffuf_meta.get("external_domains", []),
+    }
+
+    # Update the graph database
+    print(f"[*][Partial Recon] Updating graph database...")
+    try:
+        from graph_db import Neo4jClient
+        with Neo4jClient() as graph_client:
+            if graph_client.verify_connection():
+                stats = graph_client.update_graph_from_resource_enum(
+                    recon_data=result,
+                    user_id=user_id,
+                    project_id=project_id,
+                )
+
+                # Link user-provided URLs to graph
+                if user_urls:
+                    from urllib.parse import urlparse as _urlparse
+                    driver = graph_client.driver
+                    with driver.session() as session:
+                        if url_attach_to:
+                            for url in user_urls:
+                                parsed = _urlparse(url)
+                                base_url = f"{parsed.scheme}://{parsed.netloc}"
+                                session.run(
+                                    """
+                                    MATCH (parent:BaseURL {url: $parent_url, user_id: $uid, project_id: $pid})
+                                    MERGE (b:BaseURL {url: $url, user_id: $uid, project_id: $pid})
+                                    ON CREATE SET b.source = 'partial_recon_user_input',
+                                                  b.host = $host,
+                                                  b.updated_at = datetime()
+                                    MERGE (b)-[:DISCOVERED_FROM]->(parent)
+                                    """,
+                                    parent_url=url_attach_to, url=base_url,
+                                    uid=user_id, pid=project_id,
+                                    host=parsed.netloc.split(":")[0],
+                                )
+                            print(f"[+][Partial Recon] Linked user URLs to {url_attach_to} via DISCOVERED_FROM")
+                        elif needs_user_input:
+                            user_input_id = str(uuid.uuid4())
+                            graph_client.create_user_input_node(
+                                domain=roots,
+                                user_input_data={
+                                    "id": user_input_id,
+                                    "input_type": "urls",
+                                    "values": user_urls,
+                                    "tool_id": "Ffuf",
+                                },
+                                user_id=user_id,
+                                project_id=project_id,
+                                root_orgs=root_orgs(roots),
+                            )
+                            for url in user_urls:
+                                parsed = _urlparse(url)
+                                base_url = f"{parsed.scheme}://{parsed.netloc}"
+                                session.run(
+                                    """
+                                    MERGE (b:BaseURL {url: $url, user_id: $uid, project_id: $pid})
+                                    ON CREATE SET b.source = 'partial_recon_user_input',
+                                                  b.host = $host,
+                                                  b.updated_at = datetime()
+                                    WITH b
+                                    MATCH (ui:UserInput {id: $ui_id, user_id: $uid, project_id: $pid})
+                                    MERGE (ui)-[:PRODUCED]->(b)
+                                    """,
+                                    ui_id=user_input_id, url=base_url,
+                                    uid=user_id, pid=project_id,
+                                    host=parsed.netloc.split(":")[0],
+                                )
+                            graph_client.update_user_input_status(
+                                user_input_id, "completed", stats
+                            )
+                            print(f"[+][Partial Recon] Created UserInput + linked user URLs via PRODUCED")
+
+                print(f"[+][Partial Recon] Graph updated successfully")
+                print(f"[+][Partial Recon] Stats: {json.dumps(stats, default=str)}")
+            else:
+                print("[!][Partial Recon] Neo4j not reachable, graph not updated")
+    except Exception as e:
+        print(f"[!][Partial Recon] Graph update failed: {e}")
+        raise
+
+    print(f"\n[+][Partial Recon] FFuf directory fuzzing completed successfully")
+
+
+def run_gau(config: dict) -> None:
+    """
+    Run partial GAU (GetAllUrls) passive URL discovery.
+
+    GAU queries web archives (Wayback Machine, Common Crawl, OTX, URLScan)
+    for historical URLs associated with target domains/subdomains.
+    Results are organized into Endpoint/Parameter/BaseURL nodes and merged
+    into the graph via update_graph_from_resource_enum().
+    """
+    from recon.helpers.resource_enum import (
+        pull_gau_docker_image,
+        run_gau_discovery,
+        verify_gau_urls,
+        detect_gau_methods,
+        merge_gau_into_by_base_url,
+    )
+
+    roots = scope_roots(config)
+    domain = roots[0] if roots else ""
+
+    user_id = os.environ.get("USER_ID", "")
+    project_id = os.environ.get("PROJECT_ID", "")
+
+    print(f"[*][Partial Recon] Loading project settings...")
+    settings = partial_settings(config)
+
+    # Force-enable GAU since the user explicitly chose to run it
+    settings['GAU_ENABLED'] = True
+
+    print(f"\n{'=' * 50}")
+    print(f"[*][Partial Recon] GAU Passive URL Discovery")
+    print(f"[*][Partial Recon] Roots: {', '.join(roots)}")
+    print(f"{'=' * 50}\n")
+
+    # Parse user targets -- GAU accepts subdomains under any root
+    user_targets = config.get("user_targets") or {}
+    user_subdomains = []
+
+    if user_targets:
+        for entry in user_targets.get("subdomains", []):
+            entry = entry.strip().lower()
+            if entry and _is_valid_hostname(entry):
+                if typed_host_ok(entry, roots, config.get("domain_groups")):
+                    user_subdomains.append(entry)
+                else:
+                    print(f"[!][Partial Recon] Skipping subdomain outside scope: {entry}")
+            elif entry:
+                print(f"[!][Partial Recon] Skipping invalid hostname: {entry}")
+
+    if user_subdomains:
+        print(f"[+][Partial Recon] Validated {len(user_subdomains)} custom subdomains")
+
+    # Build target_domains: every in-scope host across the run's roots, plus the
+    # user's subdomains. A literal batch group contributes only its listed hosts.
+    include_graph = config.get("include_graph_targets", True)
+    if not include_graph:
+        print(f"[*][Partial Recon] Skipping graph targets (user opted out)")
+    target_domains = set(graph_target_hosts(
+        user_id, project_id, roots, config.get("domain_groups"),
+        include_root_domain=_should_include_root_domain(settings), include_graph=include_graph,
+    ))
+    for sub in user_subdomains:
+        target_domains.add(sub)
+
+    print(f"[+][Partial Recon] Total target domains for GAU: {len(target_domains)}")
+
+    # Also get subdomains list for scope filtering later
+    all_subdomains = list(target_domains)
+
+    # GAU settings
+    GAU_DOCKER_IMAGE = settings.get('GAU_DOCKER_IMAGE', 'sxcurity/gau:latest')
+    GAU_PROVIDERS = list(settings.get('GAU_PROVIDERS', ['wayback', 'commoncrawl', 'otx', 'urlscan']))
+    GAU_THREADS = settings.get('GAU_THREADS', 2)
+    GAU_TIMEOUT = settings.get('GAU_TIMEOUT', 60)
+    GAU_BLACKLIST_EXTENSIONS = settings.get('GAU_BLACKLIST_EXTENSIONS', ['png', 'jpg', 'jpeg', 'gif', 'css', 'woff', 'woff2', 'ttf', 'svg', 'ico', 'eot'])
+    GAU_MAX_URLS = settings.get('GAU_MAX_URLS', 10000)
+    GAU_YEAR_RANGE = settings.get('GAU_YEAR_RANGE', None)
+    GAU_VERBOSE = settings.get('GAU_VERBOSE', False)
+    GAU_VERIFY_URLS = settings.get('GAU_VERIFY_URLS', True)
+    GAU_VERIFY_DOCKER_IMAGE = settings.get('GAU_VERIFY_DOCKER_IMAGE', 'projectdiscovery/httpx:latest')
+    GAU_VERIFY_TIMEOUT = settings.get('GAU_VERIFY_TIMEOUT', 5)
+    GAU_VERIFY_RATE_LIMIT = settings.get('GAU_VERIFY_RATE_LIMIT', 50)
+    GAU_VERIFY_THREADS = settings.get('GAU_VERIFY_THREADS', 50)
+    GAU_VERIFY_ACCEPT_STATUS = settings.get('GAU_VERIFY_ACCEPT_STATUS', ['200', '201', '301', '302', '307', '308', '401', '403'])
+    GAU_DETECT_METHODS = settings.get('GAU_DETECT_METHODS', True)
+    GAU_METHOD_DETECT_THREADS = settings.get('GAU_METHOD_DETECT_THREADS', 20)
+    GAU_METHOD_DETECT_TIMEOUT = settings.get('GAU_METHOD_DETECT_TIMEOUT', 5)
+    GAU_METHOD_DETECT_RATE_LIMIT = settings.get('GAU_METHOD_DETECT_RATE_LIMIT', 30)
+    GAU_FILTER_DEAD_ENDPOINTS = settings.get('GAU_FILTER_DEAD_ENDPOINTS', True)
+
+    URLSCAN_API_KEY = settings.get('URLSCAN_API_KEY', '')
+
+    # Pull Docker image
+    print(f"[*][Partial Recon] Pulling GAU Docker image: {GAU_DOCKER_IMAGE}")
+    pull_gau_docker_image(GAU_DOCKER_IMAGE)
+
+    # Run GAU discovery
+    print(f"[*][Partial Recon] Running GAU on {len(target_domains)} domains...")
+    gau_urls, gau_urls_by_domain = run_gau_discovery(
+        target_domains,
+        GAU_DOCKER_IMAGE,
+        GAU_PROVIDERS,
+        GAU_THREADS,
+        GAU_TIMEOUT,
+        GAU_BLACKLIST_EXTENSIONS,
+        GAU_MAX_URLS,
+        GAU_YEAR_RANGE,
+        GAU_VERBOSE,
+        URLSCAN_API_KEY,
+        settings.get('GAU_WORKERS', 10),
+    )
+    print(f"[+][Partial Recon] GAU discovered {len(gau_urls)} total URLs")
+
+    if not gau_urls:
+        print("[!][Partial Recon] GAU found no URLs. No archives available for these domains.")
+        # Still update graph with user subdomains if provided
+        if user_subdomains:
+            _create_user_subdomains_in_graph(roots, user_subdomains, user_id, project_id)
+        print(f"\n[+][Partial Recon] GAU completed (no results)")
+        return
+
+    # Filter to in-scope URLs only
+    from urllib.parse import urlparse as _urlparse
+    in_scope_gau_urls = []
+    gau_external_domains = []
+    out_of_scope_count = 0
+    for url in gau_urls:
+        parsed = _urlparse(url)
+        host = parsed.netloc.split(':')[0] if ':' in parsed.netloc else parsed.netloc
+        if host in target_domains:
+            in_scope_gau_urls.append(url)
+        else:
+            out_of_scope_count += 1
+            if host:
+                gau_external_domains.append({"domain": host, "source": "gau", "url": url})
+
+    if out_of_scope_count > 0:
+        print(f"[*][Partial Recon] Filtered {out_of_scope_count} out-of-scope URLs")
+    print(f"[+][Partial Recon] In-scope URLs: {len(in_scope_gau_urls)}")
+
+    gau_urls_to_process = in_scope_gau_urls
+
+    # Verify GAU URLs if enabled
+    verified_urls = None
+    if GAU_VERIFY_URLS and gau_urls_to_process:
+        verified_urls = verify_gau_urls(
+            gau_urls_to_process,
+            GAU_VERIFY_DOCKER_IMAGE,
+            GAU_VERIFY_TIMEOUT,
+            GAU_VERIFY_RATE_LIMIT,
+            GAU_VERIFY_THREADS,
+            GAU_VERIFY_ACCEPT_STATUS,
+        )
+
+    # Detect HTTP methods
+    url_methods = None
+    urls_to_probe = list(verified_urls) if verified_urls else gau_urls_to_process
+    if GAU_DETECT_METHODS and urls_to_probe:
+        url_methods = detect_gau_methods(
+            urls_to_probe,
+            GAU_VERIFY_DOCKER_IMAGE,
+            GAU_METHOD_DETECT_THREADS,
+            GAU_METHOD_DETECT_TIMEOUT,
+            GAU_METHOD_DETECT_RATE_LIMIT,
+            GAU_FILTER_DEAD_ENDPOINTS,
+        )
+
+    # Merge GAU URLs into by_base_url structure
+    print(f"[*][Partial Recon] Merging GAU endpoints...")
+    by_base_url = {}
+    by_base_url, gau_stats = merge_gau_into_by_base_url(
+        gau_urls_to_process,
+        by_base_url,
+        verified_urls,
+        url_methods,
+    )
+
+    print(f"[+][Partial Recon] GAU stats:")
+    print(f"[+][Partial Recon]   Parsed: {gau_stats['gau_parsed']}")
+    print(f"[+][Partial Recon]   New endpoints: {gau_stats['gau_new']}")
+    if GAU_VERIFY_URLS:
+        print(f"[+][Partial Recon]   Skipped (unverified): {gau_stats.get('gau_skipped_unverified', 0)}")
+    if GAU_DETECT_METHODS:
+        print(f"[+][Partial Recon]   With POST: {gau_stats.get('gau_with_post', 0)}")
+    if GAU_FILTER_DEAD_ENDPOINTS:
+        print(f"[+][Partial Recon]   Dead filtered: {gau_stats.get('gau_skipped_dead', 0)}")
+
+    # Build resource_enum result structure (same shape as full pipeline)
+    recon_data = {
+        "domain": domain,
+        "domains": roots,
+        "subdomains": all_subdomains,
+        "resource_enum": {
+            "by_base_url": by_base_url,
+            "forms": [],
+            "jsluice_secrets": [],
+            "scan_metadata": {
+                "gau_urls_found_total": len(gau_urls),
+                "gau_urls_in_scope": len(in_scope_gau_urls),
+                "gau_stats": gau_stats,
+                "external_domains": gau_external_domains,
+            },
+            "summary": {
+                "total_endpoints": sum(
+                    len(bd['endpoints']) for bd in by_base_url.values()
+                ),
+                "total_base_urls": len(by_base_url),
+            },
+            "external_domains": gau_external_domains,
+        },
+    }
+
+    # Update the graph database
+    print(f"[*][Partial Recon] Updating graph database...")
+    try:
+        from graph_db import Neo4jClient
+        with Neo4jClient() as graph_client:
+            if graph_client.verify_connection():
+                stats = graph_client.update_graph_from_resource_enum(
+                    recon_data=recon_data,
+                    user_id=user_id,
+                    project_id=project_id,
+                )
+
+                # Create Subdomain nodes for user-provided subdomains
+                if user_subdomains:
+                    _create_user_subdomains_in_graph(roots, user_subdomains, user_id, project_id)
+
+                print(f"[+][Partial Recon] Graph updated successfully")
+                print(f"[+][Partial Recon] Stats: {json.dumps(stats, default=str)}")
+            else:
+                print("[!][Partial Recon] Neo4j not reachable, graph not updated")
+    except Exception as e:
+        print(f"[!][Partial Recon] Graph update failed: {e}")
+        raise
+
+    print(f"\n[+][Partial Recon] GAU passive URL discovery completed successfully")
+
+
+def run_jsluice(config: dict) -> None:
+    """
+    Run partial resource enumeration using only jsluice (not the full
+    resource_enum pipeline). jsluice analyzes JavaScript files to extract
+    hidden API endpoints, parameters, and secrets.
+
+    Unlike the full pipeline where jsluice runs after Katana/Hakrawler,
+    this queries the graph for existing Endpoint URLs (from prior crawling)
+    and/or accepts user-provided URLs, then runs jsluice analysis on them.
+    """
+    from recon.helpers.resource_enum import (
+        DEFAULT_JSLUICE_EXCLUDE_PATTERNS,
+        run_jsluice_analysis,
+        merge_jsluice_into_by_base_url,
+        verify_jsluice_urls,
+    )
+
+    roots = scope_roots(config)
+
+    user_id = os.environ.get("USER_ID", "")
+    project_id = os.environ.get("PROJECT_ID", "")
+
+    print(f"[*][Partial Recon] Loading project settings...")
+    settings = partial_settings(config)
+
+    # Force-enable jsluice since the user explicitly chose to run it
+    settings['JSLUICE_ENABLED'] = True
+
+    print(f"\n{'=' * 50}")
+    print(f"[*][Partial Recon] jsluice JS Analysis (only)")
+    print(f"[*][Partial Recon] Roots: {', '.join(roots)}")
+    print(f"{'=' * 50}\n")
+
+    # Parse user targets -- jsluice accepts URLs (same as Katana/Hakrawler)
+    user_targets = config.get("user_targets") or {}
+    user_urls = []
+    url_attach_to = None
+    user_input_id = None
+
+    if user_targets:
+        for entry in user_targets.get("urls", []):
+            entry = entry.strip()
+            if entry and _is_valid_url(entry):
+                user_urls.append(entry)
+            elif entry:
+                print(f"[!][Partial Recon] Skipping invalid URL: {entry}")
+
+        url_attach_to = user_targets.get("url_attach_to")  # BaseURL or None
+
+    if user_urls:
+        print(f"[+][Partial Recon] Validated {len(user_urls)} custom URLs")
+        if url_attach_to:
+            print(f"[+][Partial Recon] URLs will be attached to BaseURL: {url_attach_to}")
+        else:
+            print(f"[+][Partial Recon] URLs will be tracked via UserInput (generic)")
+
+    # Track whether we need a UserInput node (created after scan succeeds, not before)
+    needs_user_input = bool(user_urls and not url_attach_to)
+
+    # Build target URLs from Neo4j graph (or start empty if user unchecked graph targets)
+    include_graph = config.get("include_graph_targets", True)
+    target_urls = []
+    target_domains = set()
+
+    if include_graph:
+        print(f"[*][Partial Recon] Querying graph for targets (Endpoints from prior crawling)...")
+        from graph_db import Neo4jClient
+        with Neo4jClient() as graph_client:
+            if graph_client.verify_connection():
+                driver = graph_client.driver
+                with driver.session() as session:
+                    keep = graph_url_scope(session, user_id, project_id, roots,
+                                           config.get("domain_groups"), apex_filter=False)
+                    # Get all endpoint full URLs (baseurl + path) from the graph
+                    result = session.run(
+                        """
+                        MATCH (e:Endpoint {user_id: $uid, project_id: $pid})
+                        WHERE NOT """ + declared_only_unsafe("e") + """
+                        RETURN DISTINCT e.baseurl + e.path AS url
+                        """,
+                        uid=user_id, pid=project_id,
+                    )
+                    for record in result:
+                        url = record["url"]
+                        if url and keep(url_host(url)):
+                            target_urls.append(url)
+
+                    # Also add BaseURLs themselves (some may host JS directly)
+                    result = session.run(
+                        """
+                        MATCH (b:BaseURL {user_id: $uid, project_id: $pid})
+                        RETURN DISTINCT b.url AS url, b.host AS host
+                        """,
+                        uid=user_id, pid=project_id,
+                    )
+                    for record in result:
+                        url = record["url"]
+                        host = record["host"] or ""
+                        if not url or not keep(url_host(url, host)):
+                            continue
+                        if url not in target_urls:
+                            target_urls.append(url)
+                        if host:
+                            target_domains.add(host)
+
+                print(f"[+][Partial Recon] Found {len(target_urls)} URLs from graph")
+            else:
+                print("[!][Partial Recon] Neo4j not reachable, cannot fetch graph inputs")
+    else:
+        print(f"[*][Partial Recon] Skipping graph targets (user opted out)")
+
+    # Add user-provided URLs to target list
+    if user_urls:
+        print(f"[*][Partial Recon] Adding {len(user_urls)} user-provided URLs")
+        for url in user_urls:
+            if url not in target_urls:
+                target_urls.append(url)
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            host = parsed.netloc.split(":")[0]
+            if host:
+                target_domains.add(host)
+
+    # Also add the roots themselves to target_domains for scope filtering
+    target_domains.update(roots)
+
+    if not target_urls:
+        print("[!][Partial Recon] No URLs to analyze (graph has no Endpoints/BaseURLs and no valid user URLs provided).")
+        print("[!][Partial Recon] Run Katana or Hakrawler first to discover URLs, or provide URLs manually.")
+        sys.exit(1)
+
+    print(f"[+][Partial Recon] Total {len(target_urls)} URLs to analyze with jsluice")
+
+    # Extract jsluice settings
+    JSLUICE_MAX_FILES = settings.get('JSLUICE_MAX_FILES', 100)
+    JSLUICE_TIMEOUT = settings.get('JSLUICE_TIMEOUT', 300)
+    JSLUICE_EXTRACT_URLS = settings.get('JSLUICE_EXTRACT_URLS', True)
+    JSLUICE_EXTRACT_SECRETS = settings.get('JSLUICE_EXTRACT_SECRETS', True)
+    JSLUICE_CONCURRENCY = settings.get('JSLUICE_CONCURRENCY', 5)
+    JSLUICE_VERIFY_URLS = settings.get('JSLUICE_VERIFY_URLS', True)
+    JSLUICE_VERIFY_DOCKER_IMAGE = settings.get('JSLUICE_VERIFY_DOCKER_IMAGE', 'projectdiscovery/httpx:latest')
+    JSLUICE_VERIFY_TIMEOUT = settings.get('JSLUICE_VERIFY_TIMEOUT', 5)
+    JSLUICE_VERIFY_RATE_LIMIT = settings.get('JSLUICE_VERIFY_RATE_LIMIT', 50)
+    JSLUICE_VERIFY_THREADS = settings.get('JSLUICE_VERIFY_THREADS', 50)
+    JSLUICE_VERIFY_ACCEPT_STATUS = settings.get(
+        'JSLUICE_VERIFY_ACCEPT_STATUS',
+        [200, 201, 301, 302, 307, 308, 401, 403]
+    )
+    JSLUICE_EXCLUDE_PATTERNS = list(settings.get(
+        'JSLUICE_EXCLUDE_PATTERNS',
+        DEFAULT_JSLUICE_EXCLUDE_PATTERNS,
+    ))
+
+    # Run jsluice analysis (filters to .js files internally, downloads and analyzes)
+    print(f"[*][Partial Recon] Running jsluice analysis...")
+    JSLUICE_PARALLELISM = settings.get('JSLUICE_PARALLELISM', 3)
+    jsluice_result = run_jsluice_analysis(
+        target_urls,
+        JSLUICE_MAX_FILES,
+        JSLUICE_TIMEOUT,
+        JSLUICE_EXTRACT_URLS,
+        JSLUICE_EXTRACT_SECRETS,
+        JSLUICE_CONCURRENCY,
+        JSLUICE_PARALLELISM,
+        target_domains,
+    )
+
+    jsluice_urls = jsluice_result.get("urls", [])
+    jsluice_secrets = jsluice_result.get("secrets", [])
+    external_domains = jsluice_result.get("external_domains", [])
+    jsluice_urls_pre_verify_count = len(jsluice_urls)
+
+    print(f"[+][Partial Recon] jsluice found {len(jsluice_urls)} URLs, {len(jsluice_secrets)} secrets, {len(external_domains)} external domains")
+
+    # Mirror the full-pipeline verification step so the same noise/dead-URL filter
+    # applies whether jsluice runs as part of the full scan or via partial recon.
+    verify_stats = {
+        "jsluice_verify_total": 0,
+        "jsluice_verify_candidates": 0,
+        "jsluice_skipped_blacklist": 0,
+        "jsluice_verified": 0,
+        "jsluice_skipped_unverified": 0,
+    }
+    if jsluice_urls and JSLUICE_VERIFY_URLS:
+        verified_set, verify_stats = verify_jsluice_urls(
+            jsluice_urls,
+            JSLUICE_VERIFY_DOCKER_IMAGE,
+            JSLUICE_VERIFY_THREADS,
+            JSLUICE_VERIFY_TIMEOUT,
+            JSLUICE_VERIFY_RATE_LIMIT,
+            JSLUICE_VERIFY_ACCEPT_STATUS,
+            JSLUICE_EXCLUDE_PATTERNS,
+        )
+        jsluice_urls = sorted(verified_set)
+        print(f"[+][Partial Recon] jsluice verification kept {len(jsluice_urls)}/{jsluice_urls_pre_verify_count} URLs")
+    elif jsluice_urls:
+        verify_stats["jsluice_verify_total"] = jsluice_urls_pre_verify_count
+        verify_stats["jsluice_verify_candidates"] = jsluice_urls_pre_verify_count
+        verify_stats["jsluice_verified"] = jsluice_urls_pre_verify_count
+
+    # Organize extracted URLs into by_base_url structure
+    by_base_url = {}
+    jsluice_stats = {
+        "jsluice_total": 0,
+        "jsluice_parsed": 0,
+        "jsluice_new": 0,
+        "jsluice_overlap": 0,
+    }
+    jsluice_stats.update(verify_stats)
+
+    if jsluice_urls:
+        by_base_url, merge_stats = merge_jsluice_into_by_base_url(
+            jsluice_urls,
+            {},  # Start with empty -- jsluice is the only source
+        )
+        jsluice_stats.update(merge_stats)
+        print(f"[+][Partial Recon] Organized {jsluice_stats['jsluice_new']} new endpoints across {len(by_base_url)} base URLs")
+
+    # Build recon_data for graph update (needs domain + subdomains for scope)
+    recon_data = {
+        "domain": roots[0] if roots else "",
+        "domains": roots,
+        "subdomains": [],
+    }
+
+    # Get subdomains for scope filtering
+    if include_graph:
+        try:
+            from graph_db import Neo4jClient
+            with Neo4jClient() as graph_client:
+                if graph_client.verify_connection():
+                    driver = graph_client.driver
+                    with driver.session() as session:
+                        recon_data["subdomains"] = graph_scope_subdomains(
+                            session, user_id, project_id, roots, config.get("domain_groups"))
+        except Exception:
+            pass
+
+    # Ensure all target hostnames are in subdomains list for graph scope filtering
+    existing_subs = set(recon_data.get("subdomains", []))
+    for host in target_domains:
+        if host not in existing_subs:
+            existing_subs.add(host)
+    recon_data["subdomains"] = list(existing_subs)
+
+    # Build resource_enum result structure (same shape as full pipeline output)
+    result = dict(recon_data)
+    result["resource_enum"] = {
+        "by_base_url": by_base_url,
+        "forms": [],
+        "jsluice_secrets": jsluice_secrets,
+        "scan_metadata": {
+            "jsluice_total": jsluice_stats.get("jsluice_total", 0),
+            "jsluice_new": jsluice_stats.get("jsluice_new", 0),
+            "external_domains": external_domains,
+        },
+        "summary": {
+            "total_endpoints": sum(
+                len(bd['endpoints']) for bd in by_base_url.values()
+            ),
+            "total_base_urls": len(by_base_url),
+        },
+        "external_domains": external_domains,
+    }
+
+    # Update the graph database
+    print(f"[*][Partial Recon] Updating graph database...")
+    try:
+        from graph_db import Neo4jClient
+        with Neo4jClient() as graph_client:
+            if graph_client.verify_connection():
+                stats = graph_client.update_graph_from_resource_enum(
+                    recon_data=result,
+                    user_id=user_id,
+                    project_id=project_id,
+                )
+
+                # Link user-provided URLs to graph
+                if user_urls:
+                    from urllib.parse import urlparse as _urlparse
+                    driver = graph_client.driver
+                    with driver.session() as session:
+                        if url_attach_to:
+                            for url in user_urls:
+                                parsed = _urlparse(url)
+                                base_url = f"{parsed.scheme}://{parsed.netloc}"
+                                session.run(
+                                    """
+                                    MATCH (parent:BaseURL {url: $parent_url, user_id: $uid, project_id: $pid})
+                                    MERGE (b:BaseURL {url: $url, user_id: $uid, project_id: $pid})
+                                    ON CREATE SET b.source = 'partial_recon_user_input',
+                                                  b.host = $host,
+                                                  b.updated_at = datetime()
+                                    MERGE (b)-[:DISCOVERED_FROM]->(parent)
+                                    """,
+                                    parent_url=url_attach_to, url=base_url,
+                                    uid=user_id, pid=project_id,
+                                    host=parsed.netloc.split(":")[0],
+                                )
+                            print(f"[+][Partial Recon] Linked user URLs to {url_attach_to} via DISCOVERED_FROM")
+                        elif needs_user_input:
+                            user_input_id = str(uuid.uuid4())
+                            graph_client.create_user_input_node(
+                                domain=roots,
+                                user_input_data={
+                                    "id": user_input_id,
+                                    "input_type": "urls",
+                                    "values": user_urls,
+                                    "tool_id": "Jsluice",
+                                },
+                                user_id=user_id,
+                                project_id=project_id,
+                                root_orgs=root_orgs(roots),
+                            )
+                            for url in user_urls:
+                                parsed = _urlparse(url)
+                                base_url = f"{parsed.scheme}://{parsed.netloc}"
+                                session.run(
+                                    """
+                                    MERGE (b:BaseURL {url: $url, user_id: $uid, project_id: $pid})
+                                    ON CREATE SET b.source = 'partial_recon_user_input',
+                                                  b.host = $host,
+                                                  b.updated_at = datetime()
+                                    WITH b
+                                    MATCH (ui:UserInput {id: $ui_id, user_id: $uid, project_id: $pid})
+                                    MERGE (ui)-[:PRODUCED]->(b)
+                                    """,
+                                    ui_id=user_input_id, url=base_url,
+                                    uid=user_id, pid=project_id,
+                                    host=parsed.netloc.split(":")[0],
+                                )
+                            graph_client.update_user_input_status(
+                                user_input_id, "completed", stats
+                            )
+                            print(f"[+][Partial Recon] Created UserInput + linked user URLs via PRODUCED")
+
+                print(f"[+][Partial Recon] Graph updated successfully")
+                print(f"[+][Partial Recon] Stats: {json.dumps(stats, default=str)}")
+            else:
+                print("[!][Partial Recon] Neo4j not reachable, graph not updated")
+    except Exception as e:
+        print(f"[!][Partial Recon] Graph update failed: {e}")
+        raise
+
+    print(f"\n[+][Partial Recon] jsluice analysis completed successfully")

@@ -1,0 +1,42 @@
+{
+  "nodeFilter": {
+    "mode": "denylist",
+    "applyToScans": true,
+    "rules": {
+      "version": 1,
+      "kinds": {
+        "vuln.nuclei": {
+          "enabled": true,
+          "action": "mute",
+          "rules": [
+            {
+              "id": "k3f9a2",
+              "name": "Informational templates",
+              "enabled": true,
+              "all": [
+                {
+                  "field": "severity",
+                  "op": "in",
+                  "value": [
+                    "info"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "revision": 4,
+    "exemptions": [
+      [
+        "Vulnerability",
+        "v1"
+      ],
+      [
+        "Secret",
+        "s9"
+      ]
+    ]
+  }
+}

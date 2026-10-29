@@ -1,0 +1,153 @@
+{
+  "description": "A denylist over two kinds, every operator family",
+  "mode": "denylist",
+  "rules": {
+    "version": 1,
+    "kinds": {
+      "vuln.nuclei": {
+        "enabled": true,
+        "action": "mute",
+        "rules": [
+          {
+            "id": "k3f9a2",
+            "name": "Informational templates",
+            "enabled": true,
+            "all": [
+              {
+                "field": "severity",
+                "op": "in",
+                "value": [
+                  "info"
+                ]
+              }
+            ]
+          },
+          {
+            "id": "p81c0d",
+            "name": "Tech and SSL tags at low or below",
+            "enabled": true,
+            "all": [
+              {
+                "field": "tags",
+                "op": "contains_any",
+                "value": [
+                  "tech",
+                  "ssl"
+                ]
+              },
+              {
+                "field": "severity",
+                "op": "lte",
+                "value": "low"
+              }
+            ]
+          },
+          {
+            "id": "q12345",
+            "name": "Example hosts",
+            "enabled": true,
+            "all": [
+              {
+                "field": "host",
+                "op": "glob",
+                "value": "*.example.com"
+              }
+            ]
+          },
+          {
+            "id": "r12345",
+            "name": "Documentation range",
+            "enabled": true,
+            "all": [
+              {
+                "field": "matched_ip",
+                "op": "in_cidr",
+                "value": [
+                  "192.0.2.0/24",
+                  "2001:db8::/32"
+                ]
+              }
+            ]
+          },
+          {
+            "id": "s12345",
+            "name": "Mid CVSS",
+            "enabled": true,
+            "all": [
+              {
+                "field": "cvss",
+                "op": "between",
+                "value": [
+                  4,
+                  6.9
+                ]
+              }
+            ]
+          },
+          {
+            "id": "t12345",
+            "name": "Old",
+            "enabled": true,
+            "all": [
+              {
+                "field": "updated_at",
+                "op": "older_than_days",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "id": "u12345",
+            "name": "No template",
+            "enabled": true,
+            "all": [
+              {
+                "field": "template_id",
+                "op": "missing"
+              }
+            ]
+          },
+          {
+            "id": "v12345",
+            "name": "Not DAST",
+            "enabled": true,
+            "all": [
+              {
+                "field": "is_dast_finding",
+                "op": "is_false"
+              }
+            ]
+          }
+        ]
+      },
+      "secret": {
+        "enabled": true,
+        "action": "mute",
+        "rules": [
+          {
+            "id": "w12345",
+            "name": "Invalid keys",
+            "enabled": true,
+            "all": [
+              {
+                "field": "validation_status",
+                "op": "in",
+                "value": [
+                  "invalid"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "ok": true,
+    "active": [
+      "secret",
+      "vuln.nuclei"
+    ],
+    "errors": 0
+  }
+}

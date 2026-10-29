@@ -1,0 +1,32 @@
+{
+  "description": "missing takes no value",
+  "mode": "denylist",
+  "rules": {
+    "version": 1,
+    "kinds": {
+      "vuln.nuclei": {
+        "enabled": true,
+        "action": "mute",
+        "rules": [
+          {
+            "id": "k3f9a2",
+            "name": "Missing",
+            "enabled": true,
+            "all": [
+              {
+                "field": "template_id",
+                "op": "missing",
+                "value": "x"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "ok": true,
+    "active": [],
+    "errors": 1
+  }
+}

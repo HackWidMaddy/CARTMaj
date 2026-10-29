@@ -1,0 +1,323 @@
+/* Wider than a 'large' modal so the whole action row fits, but capped -- a true
+   full-width modal is far more than this table needs. !important because the
+   Modal's own size class lives in another stylesheet with equal specificity. */
+.modal {
+  max-width: min(1040px, calc(100vw - var(--space-8))) !important;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.intro p {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.intro strong {
+  color: var(--text-primary);
+}
+
+.saveCurrent {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-default);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: var(--transition-all);
+}
+
+.saveCurrent:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.saveCurrent:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.tableWrap {
+  max-height: 55vh;
+  overflow: auto;
+  border: 1px solid var(--table-border);
+  border-radius: var(--radius-default);
+  background: var(--table-surface);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+
+.table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: var(--space-2);
+  background: var(--table-header-bg);
+  border-bottom: 1px solid var(--table-header-border);
+  text-align: left;
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--table-header-fg);
+  white-space: nowrap;
+}
+
+.table td {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--table-row-border);
+  color: var(--table-cell-fg);
+  vertical-align: middle;
+}
+
+.table tbody tr:nth-child(even) {
+  background: var(--table-row-zebra-bg);
+}
+
+.table tbody tr:hover,
+.table tbody tr:nth-child(even):hover {
+  background: var(--table-row-hover-bg);
+}
+
+/* The row being viewed must out-rank the zebra stripe above. */
+.table tbody tr.rowViewing,
+.table tbody tr.rowViewing:nth-child(even) {
+  background: var(--bg-hover);
+}
+
+.num {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.muted {
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.labelCell {
+  min-width: 160px;
+}
+
+.labelStack {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+/* Created timestamp rides under the label; it used to own a whole column. */
+.created {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.label {
+  display: inline-block;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.renameRow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.renameInput {
+  width: 240px;
+  padding: var(--space-1);
+  background: var(--bg-primary);
+  border: 1px solid var(--accent-primary);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+
+.activeBadge,
+.pinBadge,
+.warnBadge,
+.runningBadge,
+.busyBadge {
+  display: inline-block;
+  margin-right: var(--space-1);
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-sm);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.activeBadge {
+  background: rgba(5, 150, 105, 0.15);
+  color: #059669;
+}
+
+.pinBadge {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.warnBadge {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--status-warning);
+}
+
+/* A scan is writing to the live graph right now. */
+.runningBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+}
+
+.runningDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+/* Paused / pausing / stopping: the scan holds the graph but is not writing. */
+.busyBadge {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--status-warning);
+}
+
+/* The row is wider than the modal on narrow screens, so pin the actions to the
+   right edge -- Rename / Pin / Delete used to scroll out of sight behind the
+   horizontal scrollbar and looked like they did not exist. */
+.actionsCol {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  width: 1%;
+  white-space: nowrap;
+  background: var(--table-surface);
+  border-left: 1px solid var(--table-border);
+}
+
+/* The pinned column is opaque -- rows scroll underneath it -- so the zebra
+   stripe cannot show through from the row. It repaints it as a wash over its
+   own background instead. */
+.table tbody tr:nth-child(even) .actionsCol {
+  background-image: linear-gradient(var(--table-row-zebra-bg), var(--table-row-zebra-bg));
+}
+
+.table tbody tr:hover .actionsCol {
+  background: var(--table-row-hover-bg);
+}
+
+.table th.actionsCol {
+  z-index: 3;
+  background: var(--table-header-bg);
+}
+
+.table tbody tr.rowViewing .actionsCol {
+  background: var(--bg-hover);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.actionBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: var(--transition-all);
+}
+
+.actionBtn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.iconBtn {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: var(--transition-all);
+}
+
+.iconBtn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.actionBtn:disabled,
+.iconBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Destructive action reads red at rest, not only on hover. */
+.dangerBtn {
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.dangerBtn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+}
+
+.actionBtn svg,
+.iconBtn svg {
+  flex-shrink: 0;
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

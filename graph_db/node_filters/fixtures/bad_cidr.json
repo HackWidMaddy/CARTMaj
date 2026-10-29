@@ -1,0 +1,34 @@
+{
+  "description": "A CIDR must parse",
+  "mode": "denylist",
+  "rules": {
+    "version": 1,
+    "kinds": {
+      "vuln.nuclei": {
+        "enabled": true,
+        "action": "mute",
+        "rules": [
+          {
+            "id": "k3f9a2",
+            "name": "Bad net",
+            "enabled": true,
+            "all": [
+              {
+                "field": "matched_ip",
+                "op": "in_cidr",
+                "value": [
+                  "192.0.2.0/99"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "ok": true,
+    "active": [],
+    "errors": 1
+  }
+}

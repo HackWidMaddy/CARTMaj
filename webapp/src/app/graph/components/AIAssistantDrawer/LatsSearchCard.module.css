@@ -1,0 +1,336 @@
+.card {
+  border: 1px solid var(--border-color, rgba(148, 163, 184, 0.25));
+  border-radius: 8px;
+  background: var(--card-bg, rgba(30, 41, 59, 0.35));
+  margin: 6px 0;
+  font-size: 0.8rem;
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border-color, rgba(148, 163, 184, 0.15));
+}
+
+.headerIcon {
+  color: #a78bfa;
+  flex-shrink: 0;
+}
+
+.title {
+  font-weight: 600;
+}
+
+.phaseBadge,
+.rolloutBadge,
+.shadowBadge,
+.outcomeBadge,
+.statusBadge {
+  font-size: 0.68rem;
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.statusBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(34, 197, 94, 0.16);
+  color: #86efac;
+  font-weight: 600;
+}
+
+.statusDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  animation: latsPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes latsPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.7); }
+}
+
+.phaseBadge {
+  background: rgba(139, 92, 246, 0.18);
+  color: #c4b5fd;
+}
+
+.rolloutBadge {
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--text-muted, #94a3b8);
+  margin-left: auto;
+}
+
+.shadowBadge {
+  background: rgba(59, 130, 246, 0.18);
+  color: #93c5fd;
+}
+
+.outcomeBadge {
+  background: rgba(148, 163, 184, 0.15);
+  color: #cbd5e1;
+}
+
+.outcomeBadge[data-outcome='terminal_success'] {
+  background: rgba(22, 101, 52, 0.35);
+  color: #86efac;
+}
+
+.hud {
+  display: flex;
+  gap: 14px;
+  padding: 5px 10px;
+  font-size: 0.7rem;
+  color: var(--text-muted, #94a3b8);
+  border-bottom: 1px solid var(--border-color, rgba(148, 163, 184, 0.1));
+}
+
+.outline {
+  padding: 6px 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.72rem;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 0;
+  white-space: nowrap;
+}
+
+.glyph {
+  width: 12px;
+  text-align: center;
+  flex-shrink: 0;
+  color: var(--text-muted, #94a3b8);
+}
+
+.nodeLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40%;
+}
+
+.nodeValue {
+  color: #cbd5e1;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.dangerFlag {
+  color: #f59e0b;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.observation,
+.reflection {
+  color: var(--text-muted, #94a3b8);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-style: italic;
+  opacity: 0.85;
+}
+
+.reflection {
+  color: #fca5a5;
+}
+
+.pruned {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+.hot .nodeLabel {
+  color: #86efac;
+  font-weight: 600;
+}
+
+.terminal .glyph {
+  color: #fbbf24;
+}
+
+/* Block layout (not flex) so the path is width-constrained to the card and
+ * wraps, instead of being sized to its max-content and clipped by the card. */
+.bestLine {
+  display: block;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border-color, rgba(148, 163, 184, 0.12));
+  font-size: 0.72rem;
+}
+
+.bestLineLabel {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--text-muted, #94a3b8);
+}
+
+.bestLinePath {
+  display: block;
+  color: #86efac;
+  line-height: 1.5;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* Clamp to exactly 3 full lines (line-height 1.5 x 3 = 4.5em) and hide the
+ * rest; the toggle reveals it. No mid-word ellipsis, no text dropped. */
+.bestLinePathClamped {
+  max-height: 4.5em;
+  overflow: hidden;
+}
+
+.bestLineSep {
+  color: var(--text-muted, #94a3b8);
+}
+
+.bestLineToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 3px;
+  padding: 2px 6px 2px 4px;
+  font-size: 0.68rem;
+  color: #a78bfa;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.bestLineToggle:hover {
+  background: rgba(124, 58, 237, 0.14);
+}
+
+.footer {
+  padding: 6px 10px 8px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Animatable angle for the border-chasing glow (needs @property to tween). */
+@property --lats-glow-angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.expandBtn {
+  position: relative;
+  isolation: isolate;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(192, 132, 252, 0.35);
+  background: linear-gradient(135deg, rgba(124, 58, 237, 0.22), rgba(217, 70, 239, 0.22));
+  color: #e9d5ff;
+  cursor: pointer;
+  will-change: transform;
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease,
+    box-shadow 0.25s ease,
+    transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* A bright arc rides a rotating conic gradient, masked to just the border
+ * ring, so a glow appears to travel continuously around the edge. */
+.expandBtn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--lats-glow-angle),
+    transparent 0deg,
+    transparent 200deg,
+    rgba(232, 121, 249, 0.65) 280deg,
+    rgba(240, 220, 255, 1) 330deg,
+    rgba(232, 121, 249, 0.65) 20deg,
+    transparent 100deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  filter: drop-shadow(0 0 3px rgba(232, 121, 249, 0.55));
+  animation: latsBorderGlow 2.6s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes latsBorderGlow {
+  to {
+    --lats-glow-angle: 360deg;
+  }
+}
+
+.expandBtn svg {
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.expandBtn:hover {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.4), rgba(217, 70, 239, 0.4));
+  border-color: rgba(232, 121, 249, 0.7);
+  color: #faf5ff;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(168, 85, 247, 0.35);
+}
+
+.expandBtn:hover svg {
+  transform: scale(1.18) rotate(-6deg);
+}
+
+/* Reward hover: the glow speeds up and brightens. */
+.expandBtn:hover::before {
+  animation-duration: 1.3s;
+  filter: drop-shadow(0 0 5px rgba(232, 121, 249, 0.85));
+}
+
+.expandBtn:active {
+  transform: translateY(0) scale(0.97);
+  box-shadow: 0 2px 6px rgba(168, 85, 247, 0.3);
+}
+
+.expandBtn:focus-visible {
+  outline: 2px solid #e879f9;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .expandBtn,
+  .expandBtn svg {
+    transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+    transform: none;
+  }
+
+  .expandBtn:hover,
+  .expandBtn:active {
+    transform: none;
+  }
+
+  /* Freeze the travelling glow to a soft static ring. */
+  .expandBtn::before {
+    animation: none;
+    background: rgba(232, 121, 249, 0.45);
+  }
+}

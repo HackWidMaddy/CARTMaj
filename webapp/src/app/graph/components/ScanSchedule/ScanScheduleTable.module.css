@@ -1,0 +1,279 @@
+.wrap {
+  /* Fill the graph-page table slot: .content is position:relative (not flex), so
+     `flex:1` is inert here — anchor with absolute inset:0 like DataTable, and let
+     the content scroll within. */
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-3);
+  overflow: auto;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+/* Run-history header: title on the left, "Delete selected" on the right. */
+.historyHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: 26px;
+}
+
+.clearBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  color: #ef4444;
+  cursor: pointer;
+}
+
+.clearBtn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: #ef4444;
+}
+
+.clearBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Narrow leading checkbox column in the run-history table. */
+.checkCol {
+  width: 28px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.checkCol input {
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.table tbody tr.rowSelected,
+.table tbody tr.rowSelected:nth-child(even) {
+  background: var(--bg-tertiary);
+}
+
+.form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-default);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+}
+
+.input {
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+
+.createBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  background: var(--accent-primary);
+  border: 1px solid var(--accent-primary);
+  border-radius: var(--radius-default);
+  font-size: var(--text-xs);
+  color: var(--text-on-accent);
+  cursor: pointer;
+}
+
+.createBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+
+.table th {
+  padding: var(--space-2);
+  background: var(--table-header-bg);
+  border-bottom: 1px solid var(--table-header-border);
+  text-align: left;
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--table-header-fg);
+  white-space: nowrap;
+}
+
+.table td {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--table-row-border);
+  color: var(--table-cell-fg);
+  vertical-align: middle;
+}
+
+.table tbody tr:nth-child(even) {
+  background: var(--table-row-zebra-bg);
+}
+
+.table tbody tr:hover,
+.table tbody tr:nth-child(even):hover {
+  background: var(--table-row-hover-bg);
+}
+
+.muted { color: var(--text-tertiary); white-space: nowrap; }
+.num { text-align: right; }
+.empty { color: var(--text-tertiary); text-align: center; padding: var(--space-3); }
+
+.actions { display: flex; gap: var(--space-1); }
+
+.iconBtn {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.iconBtn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+.iconBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+.dangerBtn:hover:not(:disabled) { color: #ef4444; }
+
+/* Same button, carrying a word instead of a glyph (queue actions). */
+.textBtn {
+  padding: 1px var(--space-2);
+  border-color: var(--border-default);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.badgeOn, .badgeOff, .statusOk, .statusBad, .statusRunning, .statusDeferred {
+  display: inline-block;
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-sm);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.badgeOn, .statusOk { background: rgba(5, 150, 105, 0.15); color: #059669; }
+.badgeOff { background: var(--bg-tertiary); color: var(--text-secondary); }
+.statusBad { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
+.statusRunning { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
+.statusDeferred { background: rgba(245, 158, 11, 0.15); color: var(--status-warning); }
+
+/* Circuit breakers: a run that could not fully re-check every source. */
+.partialBadge {
+  display: inline-block;
+  margin-left: var(--space-1);
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-sm);
+  font-size: 9px;
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--status-warning);
+}
+
+/* A saved scope the current rules refuse: the schedule is (or will be) paused. */
+.scopeBadge {
+  display: block;
+  margin-top: 2px;
+  max-width: 260px;
+  padding: 1px var(--space-1);
+  border-radius: var(--radius-sm);
+  font-size: 9px;
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--status-warning);
+}
+
+.spinner { animation: spin 1s linear infinite; }
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.loadError {
+  padding: var(--space-2) var(--space-3);
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: var(--radius-default);
+  font-size: var(--text-xs);
+  color: #ef4444;
+}
+
+/* C-11: pointer to the Scan queue section above. */
+.hint {
+  font-size: 0.8rem;
+  color: var(--text-secondary, #9aa);
+  margin: 0.25rem 0 0.75rem;
+  line-height: 1.4;
+}
+
+/* Fixed-size pagination controls shared by all three Scans-tab tables. */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.pagerBtn {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--space-2);
+  font-size: var(--text-xs);
+  background: transparent;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.pagerBtn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+.pagerBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.pagerLabel {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}

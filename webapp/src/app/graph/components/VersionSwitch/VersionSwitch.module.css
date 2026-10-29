@@ -1,0 +1,169 @@
+.wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 260px;
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-default);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: var(--transition-all);
+}
+
+.trigger:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.triggerPast {
+  border-color: var(--status-warning);
+  color: var(--status-warning);
+}
+
+.triggerLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pastBadge {
+  flex-shrink: 0;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  background: rgba(245, 158, 11, 0.15);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 60;
+  min-width: 320px;
+  max-width: 420px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-default);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.header {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-default);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+}
+
+.list {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: transparent;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  transition: var(--transition-all);
+}
+
+.item:hover {
+  background: var(--bg-hover);
+}
+
+.itemActive {
+  background: var(--bg-hover);
+}
+
+.itemCheck {
+  width: 12px;
+  flex-shrink: 0;
+  padding-top: 2px;
+  color: var(--accent-primary);
+}
+
+.itemBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.itemLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+
+.activeBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px var(--space-1);
+  border-radius: var(--radius-sm);
+  background: rgba(5, 150, 105, 0.15);
+  color: #059669;
+  font-size: 9px;
+  /* The inherited line-height leaves descender space under uppercase text, which
+     pushes the glyphs off the badge's optical centre and away from the icon. */
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Lucide renders inline SVGs, so the baseline gap under the icon knocks it out of
+   line with the label. Block-level removes the gap; centring then holds. */
+.activeBadge svg {
+  display: block;
+  flex-shrink: 0;
+}
+
+.itemMeta {
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.manage {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: transparent;
+  border: none;
+  border-top: 1px solid var(--border-default);
+  font-size: var(--text-xs);
+  color: var(--accent-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.manage:hover {
+  background: var(--bg-hover);
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

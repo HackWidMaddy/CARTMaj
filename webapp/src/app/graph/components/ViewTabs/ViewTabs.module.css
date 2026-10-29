@@ -1,0 +1,561 @@
+/* --bg-secondary put this a single step off the page behind it, which in the
+   light theme is #fafafa against white: the nav read as part of the content it
+   is supposed to sit above. --bg-tertiary is the first shade that separates in
+   BOTH themes, and --border-strong draws the edge the shade alone cannot. */
+.tabBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-3);
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-strong);
+  flex-shrink: 0;
+  height: 32px;
+}
+
+.tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 100%;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  padding: var(--space-1) var(--space-3);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+  height: 100%;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  color: var(--text-secondary);
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
+}
+
+.tabActive {
+  color: var(--accent-primary);
+  border-bottom-color: var(--accent-primary);
+}
+
+.tabTerminal {
+  color: #ff3333;
+  border-bottom-color: #ff3333;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--accent-primary);
+  color: var(--bg-primary);
+  font-size: 9px;
+  font-weight: var(--font-semibold);
+  line-height: 1;
+}
+
+/* -- Filter Group (create + select as unified element) -- */
+
+.filterGroup {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  overflow: visible;
+  margin-right: var(--space-1);
+}
+
+.filterGroupCreate {
+  display: flex;
+  align-items: center;
+  position: relative;
+  padding: 0 6px;
+  background: var(--bg-elevated);
+  border: none;
+  border-right: 1px solid var(--border-default);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+  height: 100%;
+  border-radius: calc(var(--radius-md) - 1px) 0 0 calc(var(--radius-md) - 1px);
+}
+
+.filterGroupCreate:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.filterGroupCreateActive {
+  color: var(--accent-primary);
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.createFilterPlus {
+  position: absolute;
+  bottom: 2px;
+  right: 1px;
+  stroke-width: 3;
+}
+
+.filterGroupSelect {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+
+.filterGroupPill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+  white-space: nowrap;
+  max-width: 180px;
+  height: 100%;
+  border-radius: 0 calc(var(--radius-md) - 1px) calc(var(--radius-md) - 1px) 0;
+}
+
+.filterGroupPill:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.filterGroupPillActive {
+  background: var(--accent-primary);
+  color: #fff;
+  border-radius: 0 calc(var(--radius-md) - 1px) calc(var(--radius-md) - 1px) 0;
+}
+
+.filterGroupPillActive:hover {
+  opacity: 0.9;
+}
+
+.filterPillName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+}
+
+.filterPillLabel {
+  font-size: 10px;
+}
+
+.filterPillClear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease;
+}
+
+.filterPillClear:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+.filterDropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 100;
+  min-width: 260px;
+  max-width: 340px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  margin-top: 4px;
+  overflow: hidden;
+}
+
+.filterDropdownHeader {
+  padding: var(--space-2) var(--space-3);
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.filterDropdownList {
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.filterDropdownItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.filterDropdownItem:hover {
+  background: var(--bg-hover);
+}
+
+.filterDropdownItemActive {
+  background: var(--bg-tertiary);
+  border-left: 2px solid var(--accent-primary);
+}
+
+.filterDropdownInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.filterDropdownName {
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.filterDropdownDesc {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+
+.filterDropdownDelete {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.filterDropdownDelete:hover {
+  color: var(--danger);
+  background: var(--bg-hover);
+}
+
+/* Table controls (right side) */
+
+.tableControls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 100%;
+}
+
+.searchWrapper {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 2px var(--space-2);
+  width: 160px;
+  transition: border-color 0.15s ease;
+}
+
+.searchWrapper:focus-within {
+  border-color: var(--accent-primary);
+}
+
+.searchIcon {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.searchInput {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  width: 100%;
+}
+
+.searchInput::placeholder {
+  color: var(--text-tertiary);
+}
+
+.rowCount {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.exportBtn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+  white-space: nowrap;
+}
+
+.exportBtn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.exportBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.exportSpinner {
+  animation: exportSpin 1s linear infinite;
+}
+
+@keyframes exportSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Right section (tunnel badges + table controls) */
+
+.rightSection {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: 100%;
+  margin-left: auto;
+}
+
+/* Tunnel status badges */
+
+.tunnelBadges {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+
+.tunnelBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px var(--space-2);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: var(--font-medium);
+  white-space: nowrap;
+}
+
+.tunnelDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  flex-shrink: 0;
+}
+
+.tunnelName {
+  font-size: 10px;
+}
+
+.tunnelSep {
+  color: var(--border-default);
+  font-size: 10px;
+}
+
+.tunnelHost {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+}
+
+/* View mode toggles (graph view, far right) */
+.viewToggles {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* Table view mode dropdown */
+.tableMenuContainer {
+  position: relative;
+}
+
+.tabDropdownIcon {
+  margin-left: 2px;
+  opacity: 0.5;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.tabDropdownIcon:hover {
+  opacity: 1;
+}
+
+.tableDropdownMenu {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  padding: 3px;
+  z-index: 20;
+  min-width: 200px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+.tableDropdownDivider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border-primary);
+}
+
+.tableDropdownHeader {
+  padding: 4px 10px 2px;
+  font-size: 9px;
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+}
+
+.tableDropdownItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  padding: 5px 10px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+
+.tableDropdownItem:hover {
+  background: var(--bg-hover, rgba(255,255,255,0.06));
+  color: var(--text-primary);
+}
+
+.tableDropdownItemActive {
+  composes: tableDropdownItem;
+  color: var(--text-primary);
+  background: var(--bg-hover, rgba(255,255,255,0.06));
+}
+
+/* -- Unseen-rows badge (table tab + its dropdown items) -- */
+
+.unseenBadge {
+  composes: badge;
+  /* `.badge` paints its text in --bg-primary, which is near-white in the dark
+     theme and near-black in the light one - so the count flipped to dark text
+     on crimson whenever the user switched themes. This token is white in both. */
+  color: var(--text-on-accent);
+  /* Pushed to the trailing edge so twenty badges line up in one column down the
+     dropdown instead of jittering with each label's width. */
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* -- Mute Rules tab: the armed pill -- */
+
+/* Keeps the pill on the same line as its label when the tab row scrolls. */
+.tabLabelWithPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.armedBadge {
+  composes: badge;
+  background: var(--status-info);
+  color: var(--text-on-accent);
+  flex-shrink: 0;
+}
+
+/* -- Narrow screens -- */
+
+/* The containing block for the dropdown menus when the tab row scrolls; see below. */
+.tabBar {
+  position: relative;
+}
+
+@media (max-width: 900px) {
+  .tabs {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+
+  .tab {
+    flex-shrink: 0;
+  }
+
+  /* A scrolling row clips anything positioned inside it, which would cut the
+     table and surface menus off at the header's bottom edge. With their
+     anchors static, the menus are placed against the tab bar instead, which
+     does not scroll. */
+  .tableMenuContainer,
+  .filterGroupSelect {
+    position: static;
+  }
+
+  .tableDropdownMenu {
+    max-height: 70vh;
+    overflow-y: auto;
+  }
+}

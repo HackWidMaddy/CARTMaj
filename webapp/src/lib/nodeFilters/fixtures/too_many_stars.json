@@ -1,0 +1,32 @@
+{
+  "description": "Globs are capped at 16 wildcards",
+  "mode": "denylist",
+  "rules": {
+    "version": 1,
+    "kinds": {
+      "vuln.nuclei": {
+        "enabled": true,
+        "action": "mute",
+        "rules": [
+          {
+            "id": "k3f9a2",
+            "name": "Stars",
+            "enabled": true,
+            "all": [
+              {
+                "field": "host",
+                "op": "glob",
+                "value": "*****************"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "ok": true,
+    "active": [],
+    "errors": 1
+  }
+}

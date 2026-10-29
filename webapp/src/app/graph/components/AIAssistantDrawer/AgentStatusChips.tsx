@@ -1,0 +1,89 @@
+/**
+ * AgentStatusChips - live KPI chips for the Todos bar.
+ *
+ * Three at-a-glance signals of agent behaviour:
+ *   1. Loop risk score + tier (health)         - Zap
+ *   2. Discovery stall (turns since a finding)  - Radar
+ *   3. LATS status (reasoning mode)             - Network
+ *
+ * All values are derived by ChatArea from data it already holds (the latest
+ * thinking item carries score/tier/stall; the latest running LATS item carries
+ * rollouts/budget), so this component is a pure presenter.
+ */
+
+'use client'
+
+import { Zap, Radar, Network } from 'lucide-react'
+import styles from './AgentStatusChips.module.css'
+
+interface AgentStatusChipsProps {
+  score?: number | null
+  tier?: string | null
+  stall?: number | null
+  latsActive: boolean
+  latsRollouts?: number
+  latsBudget?: number
+}
+
+// Stall turns at/above which the chip warns (matches the LATS re-activation
+// floor - this is when the meta-controllers start to re-engage).
+const STALL_WARN = 5
+
+export function AgentStatusChips({
+  score,
+  tier,
+  stall,
+  latsActive,
+  latsRollouts,
+  latsBudget,
+}: AgentStatusChipsProps) {
+  const hasScore = typeof score === 'number' && !Number.isNaN(score)
+  const tierClass = tier ? styles[`tier_${tier}`] || '' : ''
+  const stallClass =
+    typeof stall === 'number' && stall >= STALL_WARN ? styles.stallWarn : ''
+
+  return (
+    <div className={styles.chips}>
+      {/* 1. Loop risk health */}
+      <span
+        className={`${styles.chip} ${tierClass}`}
+        title={
+          hasScore
+            ? `Loop risk ${score!.toFixed(1)}${tier ? ` (${tier})` : ''} - higher is worse`
+            : 'Loop risk - waiting for first score'
+        }
+      >
+        <Zap size={12} className={styles.icon} />
+        <span className={styles.value}>{hasScore ? score!.toFixed(1) : '-'}</span>
+      </span>
+
+      {/* 2. Discovery stall */}
+      <span
+        className={`${styles.chip} ${stallClass}`}
+        title={
+          typeof stall === 'number'
+            ? `${stall} think turn${stall === 1 ? '' : 's'} since a new finding`
+            : 'Turns since a new finding'
+        }
+      >
+        <Radar size={12} className={styles.icon} />
+        <span className={styles.value}>{typeof stall === 'number' ? stall : '-'}</span>
+      </span>
+
+      {/* 3. LATS reasoning mode */}
+      <span
+        className={`${styles.chip} ${latsActive ? styles.latsActive : styles.latsIdle}`}
+        title={
+          latsActive
+            ? `LATS tree search active - ${latsRollouts ?? 0}/${latsBudget ?? 0} rollouts`
+            : 'LATS idle (normal ReAct)'
+        }
+      >
+        <Network size={12} className={styles.icon} />
+        <span className={styles.value}>
+          {latsActive ? `${latsRollouts ?? 0}/${latsBudget ?? 0}` : 'idle'}
+        </span>
+      </span>
+    </div>
+  )
+}

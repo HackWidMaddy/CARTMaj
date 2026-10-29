@@ -1,0 +1,50 @@
+{
+  "description": "Denylist: the invalid rule is skipped, the valid one runs",
+  "mode": "denylist",
+  "rules": {
+    "version": 1,
+    "kinds": {
+      "vuln.nuclei": {
+        "enabled": true,
+        "action": "mute",
+        "rules": [
+          {
+            "id": "k3f9a2",
+            "name": "Informational templates",
+            "enabled": true,
+            "all": [
+              {
+                "field": "severity",
+                "op": "in",
+                "value": [
+                  "info"
+                ]
+              }
+            ]
+          },
+          {
+            "id": "p81c0d",
+            "name": "Unknown field",
+            "enabled": true,
+            "all": [
+              {
+                "field": "no_such_field",
+                "op": "in",
+                "value": [
+                  "x"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "ok": true,
+    "active": [
+      "vuln.nuclei"
+    ],
+    "errors": 1
+  }
+}

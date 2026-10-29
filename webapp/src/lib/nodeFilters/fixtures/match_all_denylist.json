@@ -1,0 +1,29 @@
+{
+  "description": "match_all mutes every node of the kind in denylist mode",
+  "mode": "denylist",
+  "rules": {
+    "version": 1,
+    "kinds": {
+      "vuln.osv": {
+        "enabled": true,
+        "action": "mute",
+        "rules": [
+          {
+            "id": "k3f9a2",
+            "name": "Every OSV advisory",
+            "enabled": true,
+            "all": [],
+            "match_all": true
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "ok": true,
+    "active": [
+      "vuln.osv"
+    ],
+    "errors": 0
+  }
+}

@@ -1,0 +1,224 @@
+/**
+ * Semantic Tokens
+ * Meaning-based color assignments - USE THESE in components
+ * These tokens change between light and dark themes
+ */
+
+:root {
+  /* ═══════════════════════════════════════════════════════════════════════════
+     BACKGROUNDS
+     ═══════════════════════════════════════════════════════════════════════════ */
+  --bg-primary: var(--color-gray-950);      /* Main app background */
+  --bg-secondary: var(--color-gray-900);    /* Cards, panels */
+  --bg-tertiary: var(--color-gray-850);     /* Nested elements */
+  --bg-quaternary: var(--color-gray-700);   /* Deep nested elements */
+  --bg-elevated: var(--color-gray-800);     /* Modals, dropdowns */
+  --bg-hover: var(--color-gray-800);        /* Hover states */
+  --bg-active: var(--color-gray-700);       /* Active/pressed states */
+  --bg-input: var(--color-gray-900);        /* Input fields */
+  --bg-overlay: rgba(0, 0, 0, 0.5);         /* Modal overlays */
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     TEXT
+     ═══════════════════════════════════════════════════════════════════════════ */
+  --text-primary: var(--color-gray-50);     /* Main text */
+  --text-secondary: var(--color-gray-400);  /* Secondary/muted text */
+  --text-tertiary: var(--color-gray-500);   /* Disabled, placeholders */
+  --text-inverse: var(--color-gray-950);    /* Text on light backgrounds */
+  --text-on-accent: var(--color-white);     /* Text on colored backgrounds */
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     BORDERS
+     ═══════════════════════════════════════════════════════════════════════════ */
+  --border-default: var(--color-gray-800);  /* Default borders */
+  --border-subtle: var(--color-gray-850);   /* Subtle dividers */
+  --border-strong: var(--color-gray-700);   /* Emphasized borders */
+  --border-focus: var(--color-blue-500);    /* Focus rings */
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     ACCENT / BRAND (Crimson Red - Primary, Blue - Secondary)
+     ═══════════════════════════════════════════════════════════════════════════ */
+  --accent-primary: var(--color-crimson-500);
+  --accent-primary-hover: var(--color-crimson-600);
+  --accent-primary-active: var(--color-crimson-700);
+  --accent-primary-subtle: var(--color-crimson-900);
+
+  --accent-secondary: var(--color-blue-500);
+  --accent-secondary-hover: var(--color-blue-600);
+  --accent-secondary-active: var(--color-blue-700);
+  --accent-secondary-subtle: var(--color-blue-900);
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     STATUS COLORS
+     ═══════════════════════════════════════════════════════════════════════════ */
+  /* Success */
+  --status-success: var(--color-green-500);
+  --status-success-bg: var(--color-green-900);
+  --status-success-text: var(--color-green-400);
+
+  /* Warning */
+  --status-warning: var(--color-amber-500);
+  --status-warning-bg: var(--color-amber-900);
+  --status-warning-text: var(--color-amber-400);
+
+  /* Error */
+  --status-error: var(--color-red-500);
+  --status-error-bg: var(--color-red-900);
+  --status-error-text: var(--color-red-400);
+
+  /* Info */
+  --status-info: var(--color-blue-500);
+  --status-info-bg: var(--color-blue-900);
+  --status-info-text: var(--color-blue-400);
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     GRAPH NODE COLORS (Security-focused hierarchy)
+     These remain consistent across themes for visual recognition
+     ═══════════════════════════════════════════════════════════════════════════ */
+
+  /* Critical Security (Red family) */
+  --node-vulnerability: var(--color-red-500);
+  --node-cve: var(--color-red-600);
+
+  /* Threat Intelligence (Orange family) */
+  --node-mitre: var(--color-orange-500);
+  --node-capec: var(--color-yellow-500);
+
+  /* Domain Hierarchy (Blue family) */
+  --node-domain: var(--color-blue-900);
+  --node-subdomain: var(--color-blue-600);
+
+  /* Network Layer (Cyan/Teal family) */
+  --node-ip: var(--color-teal-600);
+  --node-port: var(--color-cyan-700);
+  --node-service: var(--color-cyan-500);
+
+  /* Web Application Layer (Purple family) */
+  --node-baseurl: var(--color-indigo-500);
+  --node-endpoint: var(--color-violet-500);
+  --node-parameter: var(--color-purple-500);
+
+  /* Attack chain (warm family; brightness ranks finding > root > scaffolding) */
+  --node-chain-root: var(--color-amber-500);
+  --node-chain-step: var(--color-gray-400);
+  --node-chain-decision: var(--color-amber-900);
+  --node-chain-finding: #ff7a00;
+  --node-chain-failure: #8c5a5a;
+
+  /* Context & Metadata */
+  --node-technology: var(--color-green-500);
+  --node-certificate: var(--color-amber-600);
+  --node-header: var(--color-gray-500);
+  --node-default: var(--color-gray-500);
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     SEVERITY COLORS
+     ═══════════════════════════════════════════════════════════════════════════ */
+
+  /* Vulnerability severity (pure red tonality) */
+  --severity-vuln-critical: var(--color-vuln-critical);
+  --severity-vuln-high: var(--color-red-700);
+  --severity-vuln-medium: var(--color-red-700);
+  --severity-vuln-low: var(--color-red-900);
+  --severity-vuln-info: var(--color-red-900);
+  --severity-vuln-unknown: var(--color-gray-500);
+
+  /* CVE severity (magenta-red tonality) */
+  --severity-cve-critical: var(--color-cve-critical);
+  --severity-cve-high: var(--color-pink-700);
+  --severity-cve-medium: var(--color-pink-700);
+  --severity-cve-low: var(--color-pink-900);
+  --severity-cve-info: var(--color-pink-900);
+  --severity-cve-unknown: var(--color-gray-500);
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     GRAPH SPECIFIC
+     ═══════════════════════════════════════════════════════════════════════════ */
+  --graph-bg: var(--color-gray-950);
+  --graph-label-color: var(--color-white);
+  --graph-link-default: var(--color-gray-400);
+  --graph-link-highlight: var(--color-blue-400);
+  --graph-selection-ring: var(--color-green-500);
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     DATA TABLES
+     The one place a data table's colours are decided. Every table in the app --
+     Priority Board, All Nodes, the Red Zone set, the settings lists -- paints
+     from these and nothing else, so the whole product reads as one table.
+     Geometry (padding, font size, widths) stays with each table; only colour,
+     border and ink are shared.
+     ═══════════════════════════════════════════════════════════════════════════ */
+  --table-surface: var(--bg-primary);            /* sheet the rows sit on */
+  --table-border: var(--border-default);         /* outer frame of the scroller */
+  --table-header-bg: var(--bg-tertiary);
+  --table-header-fg: var(--text-secondary);
+  --table-header-border: var(--border-default);  /* under the header row */
+  --table-cell-fg: var(--text-primary);
+  --table-cell-fg-muted: var(--text-secondary);  /* supporting columns */
+  --table-row-border: var(--border-subtle);      /* between rows */
+  --table-row-hover-bg: var(--bg-hover);
+
+  /* The zebra is a wash ON TOP of whichever surface the row sits on, not a
+     colour of its own, so it is the one value that cannot derive from a
+     semantic token: white at 3% over near-black, black at 2.2% over white. */
+  --table-row-zebra-bg: rgba(255, 255, 255, 0.03);
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     SETTINGS FORMS
+     The one place a settings form's colours are decided (worn via `.formSkin`
+     in ProjectForm.module.css). Three layers, each a distinct shade from the
+     one it sits on: the section card, a group panel one step up from it, and
+     the fields, recessed below both. Text has exactly two inks: `--form-ink`
+     for labels, titles and values, `--form-ink-muted` for descriptions and
+     hints. Colour is reserved for icons, borders and emphasis: the status inks
+     are 400-level here to glow on near-black, 700/800 in light, where amber and
+     green need the 800 to clear 4.5:1 as bold text on their own tint.
+     ═══════════════════════════════════════════════════════════════════════════ */
+  --form-surface: var(--color-gray-900);
+  --form-header-bg: var(--color-gray-850);
+  --form-panel-bg: #222226;
+  --form-panel-border: #2f2f35;
+  --form-divider: #313137;
+
+  --form-field-bg: #0b0b0d;
+  --form-field-border: var(--color-gray-700);
+  --form-field-border-hover: var(--color-gray-600);
+  --form-field-disabled-bg: #131316;
+  --form-focus: var(--color-blue-500);
+  --form-focus-ring: rgba(59, 130, 246, 0.28);
+
+  --form-ink: var(--color-gray-100);
+  --form-ink-muted: var(--color-gray-400);
+  /* Bold inside muted text: one step up from muted, not the white of --form-ink,
+     which glares against the grey prose around it. */
+  --form-ink-emphasis: var(--color-gray-300);
+  --form-ink-faint: var(--color-gray-500);
+
+  --form-info: var(--color-blue-400);
+  --form-success: var(--color-green-400);
+  --form-warning: var(--color-amber-400);
+  --form-danger: var(--color-red-400);
+  --form-passive: var(--color-cyan-400);
+  --form-high: var(--color-orange-400);
+
+  --form-toggle-off-bg: var(--color-gray-700);
+  --form-toggle-off-border: var(--color-gray-600);
+  --form-toggle-knob: var(--color-gray-300);
+  --form-toggle-on-bg: var(--color-blue-500);
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     INTERACTIVE ELEMENTS
+     ═══════════════════════════════════════════════════════════════════════════ */
+  --toggle-bg: var(--color-gray-700);
+  --toggle-bg-active: var(--accent-secondary);
+  --toggle-knob: var(--color-gray-500);
+  --toggle-knob-active: var(--color-white);
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     DRAWER / PANELS
+     ═══════════════════════════════════════════════════════════════════════════ */
+  --drawer-bg: var(--bg-secondary);
+  --drawer-header-bg: var(--bg-primary);
+  --drawer-section-info: var(--color-blue-500);
+  --drawer-section-properties: var(--color-violet-500);
+}

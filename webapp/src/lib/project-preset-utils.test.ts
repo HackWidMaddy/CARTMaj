@@ -1,0 +1,819 @@
+/**
+ * Unit tests for the User Project Preset utility functions.
+ *
+ * Tests verify:
+ *   - the preset field set is the whole registry minus the excluded classes
+ *   - extractPresetSettings captures EVERY preset field, and nothing else
+ *   - applyPresetSettings replaces every preset field and nothing else
+ *   - both preset paths in ProjectForm go through the one guarded function
+ *
+ * @vitest-environment node
+ */
+import { readFileSync } from 'fs'
+import { fileURLToPath } from 'url'
+
+import { describe, test, expect } from 'vitest'
+import {
+  engagementLimitFields,
+  engagementRecordFields,
+  field,
+  fieldKeys,
+  fieldsWhere,
+} from './reconSettings/registry'
+import {
+  PRESET_EXCLUDED_FIELDS,
+  PRESET_FIELD_KEYS,
+  applyPresetSettings,
+  appliedPresetName,
+  extractPresetSettings,
+  pickPresetFields,
+  presetFingerprint,
+  readLoadedPreset,
+} from './project-preset-utils'
+import { RECON_PRESETS, getPresetById } from './recon-presets'
+import { canonicalJson, cyrb53 } from './fingerprint'
+
+/** The half that is listed by name, because it has no registry classification. */
+const UNCLASSIFIED = ['name', 'description', 'vhostSniCustomWordlist', 'supplyChainInputMode']
+
+/**
+ * Real settings columns that `/api/projects/defaults` does not return (measured
+ * against a running stack). The create form only holds what /defaults returned,
+ * so these are the columns a preset used to lose.
+ */
+const ABSENT_FROM_BACKEND_DEFAULTS = [
+  'katanaScope', 'sqliLevel', 'sqliRisk', 'sqliTamperScripts', 'ssrfCloudProviders',
+  'rceAggressivePayloads', 'pathTraversalRequestTimeout', 'trufflehogEnabled',
+  'trufflehogConcurrency', 'cypherfixDefaultBranch', 'cypherfixRequireApproval',
+  'supplyChainEcosystems', 'supplyChainOrgMaxRepos', 'triageReviewBudget',
+  'agentGuardrailEnabled', 'agentLatsPhaseExploitation',
+]
+
+// ============================================================
+// PRESET_EXCLUDED_FIELDS / PRESET_FIELD_KEYS
+// ============================================================
+
+describe('PRESET_EXCLUDED_FIELDS', () => {
+  test('is a Set', () => {
+    expect(PRESET_EXCLUDED_FIELDS).toBeInstanceOf(Set)
+  })
+
+  test('is composed of registry QUERIES, not a snapshot of one', () => {
+    // The guard used to be `key.startsWith('roe')`, a string match on a COLUMN
+    // NAME. Renaming a column or reclassifying a field must move this set with
+    // it, which is only true if it is derived rather than listed.
+    const bookkeeping = fieldsWhere((f, key) =>
+      (f.deny_reason === 'identity' || f.deny_reason === 'internal' || f.deny_reason === 'derived')
+      && key !== 'reconPresetId'
+    )
+    const expected = new Set([
+      ...UNCLASSIFIED,
+      ...fieldsWhere(f => f.mcp === 'create_only').map(f => f.key),
+      ...engagementLimitFields().map(f => f.key),
+      ...engagementRecordFields().map(f => f.key),
+      ...fieldsWhere(f => f.tool === 'engagement').map(f => f.key),
+      ...fieldsWhere(f => f.deny_reason === 'upload-managed').map(f => f.key),
+      ...fieldsWhere(f => f.read_deny_reason === 'credential').map(f => f.key),
+      ...fieldsWhere(f => f.deny_reason === 'escalation' || f.deny_reason === 'not-tuning').map(f => f.key),
+      ...bookkeeping.map(f => f.key),
+      ...fieldsWhere(f => f.deny_reason === 'secret').map(f => f.key),
+    ])
+    expect([...PRESET_EXCLUDED_FIELDS].sort()).toEqual([...expected].sort())
+  })
+
+  test('C-1: the escalation and not-tuning switches never travel', () => {
+    // Neither is named by any built-in, so a preset that carried them reset them
+    // to their default on every apply - and mcpKaliExecEnabled defaults to ON.
+    expect(PRESET_EXCLUDED_FIELDS.has('mcpKaliExecEnabled')).toBe(true)
+    expect(PRESET_EXCLUDED_FIELDS.has('updateGraphDb')).toBe(true)
+  })
+
+  test('OpenAPI credentials cannot be captured or applied by presets', () => {
+    const settings = { openapiSources: [{ url: 'https://docs.example.test/spec.json?token=fixture-token' }], openapiEnabled: true }
+    for (const result of [extractPresetSettings(settings), pickPresetFields(settings)]) {
+      expect(result).not.toHaveProperty('openapiSources')
+      expect(result.openapiEnabled).toBe(true)
+    }
+  })
+
+  test('the scope never travels: target, batch, ownership proof, guardrail', () => {
+    for (const key of [
+      'targetDomain', 'subdomainList', 'ipMode', 'targetIps',
+      'domainBatchMode', 'domainBatchHosts', 'domainBatchGroups',
+      'verifyDomainOwnership', 'ownershipToken', 'ownershipTxtPrefix', 'targetGuardrailEnabled',
+    ]) {
+      expect(PRESET_EXCLUDED_FIELDS.has(key), key).toBe(true)
+    }
+  })
+
+  test("the other scanners' targets never travel", () => {
+    for (const key of [
+      'githubTargetOrg', 'githubTargetRepos', 'gvmScanTargets',
+      'supplyChainRepoUrl', 'supplyChainRepoRef', 'supplyChainOrgName', 'supplyChainInputMode',
+    ]) {
+      expect(PRESET_EXCLUDED_FIELDS.has(key), key).toBe(true)
+    }
+  })
+
+  test('every engagement limit and every record column is excluded', () => {
+    // A user preset used to capture 37 engagement columns, including the rate
+    // ceiling, the excluded-host list and seven PII fields. Loading it into
+    // another project overwrote that project's scope controls with the first
+    // one's and copied the client's contact details across.
+    for (const f of [...engagementLimitFields(), ...engagementRecordFields()]) {
+      expect(PRESET_EXCLUDED_FIELDS.has(f.key), f.key).toBe(true)
+    }
+    expect(PRESET_EXCLUDED_FIELDS.has('engagementKind')).toBe(true)
+    expect(PRESET_EXCLUDED_FIELDS.has('engagementIdentityHeader')).toBe(true)
+  })
+
+  test('credentials are excluded, and so are the settings around them', () => {
+    // A per-target credential applied to another project is sent to a target it
+    // was never issued for.
+    for (const key of ['cypherfixGithubToken', 'graphqlAuthValue', 'phishingSmtpConfig', 'ownershipToken']) {
+      expect(PRESET_EXCLUDED_FIELDS.has(key), key).toBe(true)
+    }
+    // The header NAME and the secrets-extraction toggle are configuration.
+    expect(PRESET_EXCLUDED_FIELDS.has('graphqlAuthHeader')).toBe(false)
+    expect(PRESET_EXCLUDED_FIELDS.has('jsluiceExtractSecrets')).toBe(false)
+  })
+
+  test('the row bookkeeping is excluded', () => {
+    // A preset carrying `id` made the receiving project's next save try to
+    // rewrite its primary key.
+    for (const key of [
+      'id', 'userId', 'createdAt', 'updatedAt', 'createdById', 'updatedById',
+      'activationState', 'activationStartedAt', 'activationVersionId', 'roeEnabled',
+    ]) {
+      expect(PRESET_EXCLUDED_FIELDS.has(key), key).toBe(true)
+    }
+  })
+
+  test('uploaded files and per-project wordlists are excluded', () => {
+    for (const key of ['roeDocumentData', 'roeDocumentName', 'jsReconUploadedFiles',
+      'supplyChainSbomFile', 'vhostSniCustomWordlist']) {
+      expect(PRESET_EXCLUDED_FIELDS.has(key), key).toBe(true)
+    }
+  })
+
+  test('does NOT exclude recon, agent or reconPresetId settings', () => {
+    for (const key of ['naabuEnabled', 'nucleiEnabled', 'katanaDepth', 'scanModules',
+      'agentOpenaiModel', 'aiPipelineModel', 'agentMaxIterations', 'agentToolPhaseMap',
+      'reconPresetId']) {
+      expect(PRESET_EXCLUDED_FIELDS.has(key), key).toBe(false)
+    }
+  })
+})
+
+describe('the preset field set is exactly what a recon:settings token may write', () => {
+  test('every preset field is MCP-settable, except the reconPresetId badge', () => {
+    // A preset is applied by REPLACING every field it covers. A column outside
+    // the settable class joining it would let a preset carry, and reset, a
+    // value no tuning write can touch - which is how C-1 happened.
+    const offenders = PRESET_FIELD_KEYS.filter(k => k !== 'reconPresetId' && field(k)?.mcp !== 'settable')
+    expect(offenders).toEqual([])
+  })
+})
+
+describe('PRESET_FIELD_KEYS', () => {
+  test('with the excluded set, partitions the whole registry exactly', () => {
+    const all = fieldKeys()
+    expect(PRESET_FIELD_KEYS.length + PRESET_EXCLUDED_FIELDS.size).toBe(all.length)
+    for (const key of all) {
+      expect(PRESET_FIELD_KEYS.includes(key) !== PRESET_EXCLUDED_FIELDS.has(key), key).toBe(true)
+    }
+  })
+
+  test('holds only registry columns', () => {
+    for (const key of PRESET_FIELD_KEYS) expect(field(key), key).toBeDefined()
+  })
+
+  test('includes the settings /defaults does not return', () => {
+    for (const key of ABSENT_FROM_BACKEND_DEFAULTS) {
+      expect(PRESET_FIELD_KEYS.includes(key), key).toBe(true)
+    }
+  })
+})
+
+// ============================================================
+// extractPresetSettings
+// ============================================================
+
+describe('extractPresetSettings', () => {
+  test('captures every preset field, even from an empty form', () => {
+    const result = extractPresetSettings({})
+    expect(Object.keys(result).sort()).toEqual([...PRESET_FIELD_KEYS].sort())
+  })
+
+  test('a key the form does not hold is captured at its Prisma default', () => {
+    // The create form only holds what /defaults returned.
+    const result = extractPresetSettings({ naabuEnabled: false })
+    expect(result.naabuEnabled).toBe(false)
+    expect(result.katanaScope).toBe('dn')
+    expect(result.sqliLevel).toBe(1)
+    expect(result.triageReviewBudget).toBe(150)
+    expect(result.agentLport).toBeNull()
+  })
+
+  test('Json defaults are captured as values, not as the Prisma string', () => {
+    const result = extractPresetSettings({})
+    expect(typeof result.agentToolPhaseMap).toBe('object')
+    expect(typeof result.attackSkillConfig).toBe('object')
+  })
+
+  test('strips all excluded fields', () => {
+    const result = extractPresetSettings({
+      name: 'Test Project',
+      description: 'A description',
+      targetDomain: 'example.com',
+      subdomainList: ['sub1'],
+      ipMode: false,
+      targetIps: ['192.168.1.1'],
+      roeDocumentData: Buffer.from('binary'),
+      roeDocumentName: 'roe.pdf',
+      jsReconUploadedFiles: ['file1.js'],
+      roeGlobalMaxRps: 5,
+      roeClientName: 'ACME',
+      openapiSources: [{ url: 'https://docs.example.test/openapi.json?token=secret' }],
+      naabuEnabled: true,
+      nucleiEnabled: false,
+      agentMaxIterations: 50,
+    })
+    for (const key of ['name', 'description', 'targetDomain', 'subdomainList', 'ipMode',
+      'targetIps', 'roeDocumentData', 'roeDocumentName', 'jsReconUploadedFiles',
+      'roeGlobalMaxRps', 'roeClientName', 'openapiSources']) {
+      expect(result, key).not.toHaveProperty(key)
+    }
+    expect(result.naabuEnabled).toBe(true)
+    expect(result.nucleiEnabled).toBe(false)
+    expect(result.agentMaxIterations).toBe(50)
+  })
+
+  test('an edit-mode row: drops the row identity, relations and credentials', () => {
+    // In edit mode the form holds the whole GET /api/projects/[id] response.
+    const row = {
+      id: 'proj-a',
+      userId: 'user-1',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-02T00:00:00.000Z',
+      user: { id: 'user-1', name: 'u', email: 'u@example.test' },
+      authProfile: { id: 'ap-1', hasValue: true },
+      cypherfixGithubToken: 'ghp_example',
+      graphqlAuthValue: 'Bearer example',
+      katanaDepth: 4,
+    }
+    const result = extractPresetSettings(row)
+    for (const key of ['id', 'userId', 'createdAt', 'updatedAt', 'user', 'authProfile',
+      'cypherfixGithubToken', 'graphqlAuthValue']) {
+      expect(result, key).not.toHaveProperty(key)
+    }
+    expect(JSON.stringify(result)).not.toContain('ghp_example')
+    expect(result.katanaDepth).toBe(4)
+  })
+
+  test('drops keys /defaults returns that are not Project columns', () => {
+    const result = extractPresetSettings({ githubAccessToken: 'x', gvmReadyMaxRetries: 3 })
+    expect(result).not.toHaveProperty('githubAccessToken')
+    expect(result).not.toHaveProperty('gvmReadyMaxRetries')
+  })
+
+  test('preserves complex value types (arrays, objects, null)', () => {
+    const result = extractPresetSettings({
+      scanModules: ['port_scan', 'vuln_scan'],
+      agentToolPhaseMap: { query_graph: ['informational'] },
+      nucleiTemplates: [],
+      agentLport: null,
+      katanaTimeout: 3600,
+      httpxProbeHash: 'sha256',
+    })
+    expect(result.scanModules).toEqual(['port_scan', 'vuln_scan'])
+    expect(result.agentToolPhaseMap).toEqual({ query_graph: ['informational'] })
+    expect(result.nucleiTemplates).toEqual([])
+    expect(result.agentLport).toBeNull()
+    expect(result.katanaTimeout).toBe(3600)
+    expect(result.httpxProbeHash).toBe('sha256')
+  })
+
+  test('preserves false, zero and empty string (not replaced by defaults)', () => {
+    const result = extractPresetSettings({
+      naabuEnabled: false,
+      katanaEnabled: false,
+      ffufRate: 0,
+      nucleiRetries: 0,
+      agentInformationalSystemPrompt: '',
+    })
+    expect(result.naabuEnabled).toBe(false)
+    expect(result.katanaEnabled).toBe(false)
+    expect(result.ffufRate).toBe(0)
+    expect(result.nucleiRetries).toBe(0)
+    expect(result.agentInformationalSystemPrompt).toBe('')
+  })
+
+  test('keeps reconPresetId for the badge', () => {
+    expect(extractPresetSettings({ reconPresetId: 'full-active-scan' }).reconPresetId).toBe('full-active-scan')
+  })
+
+  test('does not mutate its input, and is JSON-safe', () => {
+    const formData: Record<string, unknown> = { name: 'Test', naabuEnabled: true }
+    const original = { ...formData }
+    const result = extractPresetSettings(formData)
+    expect(formData).toEqual(original)
+    expect(JSON.parse(JSON.stringify(result))).toEqual(result)
+  })
+})
+
+// ============================================================
+// applyPresetSettings
+// ============================================================
+
+// D15: `attackSkillConfig` is half preset, half the person's own. With a missing toggle
+// meaning OFF, resetting `user` to the default `{}` on every apply would silently turn
+// all of the person's skills off, so the project's `user` map is kept unless the preset
+// itself carries one. `builtIn` follows the preset or the default like any field.
+describe('applyPresetSettings: the user-skill toggles (D15)', () => {
+  const DEFAULT_CONFIG = extractPresetSettings({}).attackSkillConfig as {
+    builtIn: Record<string, boolean>; user: Record<string, boolean>
+  }
+  const CUSTOM_BUILT_IN = { ...DEFAULT_CONFIG.builtIn, xss: !DEFAULT_CONFIG.builtIn.xss, rce: !DEFAULT_CONFIG.builtIn.rce }
+  const current = { attackSkillConfig: { builtIn: CUSTOM_BUILT_IN, user: { skillA: true, skillB: false } } }
+
+  test('a preset that does not name it: builtIn resets to the default, the project\'s user map is kept', () => {
+    const next = applyPresetSettings(current, { naabuEnabled: true }, {})
+    expect(next.attackSkillConfig).toEqual({ builtIn: DEFAULT_CONFIG.builtIn, user: { skillA: true, skillB: false } })
+  })
+
+  test('a preset that does not name it: the backend default supplies builtIn, never the user map', () => {
+    const backend = { attackSkillConfig: { builtIn: { xss: true }, user: { fromBackend: true } } }
+    const next = applyPresetSettings(current, {}, backend)
+    expect(next.attackSkillConfig).toEqual({ builtIn: { xss: true }, user: { skillA: true, skillB: false } })
+  })
+
+  test('a preset that names it WITHOUT a user map: its builtIn, the project\'s user map', () => {
+    const next = applyPresetSettings(current, { attackSkillConfig: { builtIn: { sql_injection: false } } }, {})
+    expect(next.attackSkillConfig).toEqual({ builtIn: { sql_injection: false }, user: { skillA: true, skillB: false } })
+  })
+
+  test('a preset that names it WITH a user map: the preset\'s map replaces the project\'s', () => {
+    const preset = { attackSkillConfig: { builtIn: { xss: false }, user: { skillC: true } } }
+    expect(applyPresetSettings(current, preset, {}).attackSkillConfig).toEqual(preset.attackSkillConfig)
+  })
+
+  // An imported preset trimmed of another account's ids, or one saved when a missing toggle
+  // meant ON: replacing with it would turn every one of the person's skills off.
+  test('a preset whose user map is empty says nothing: the project\'s map is kept', () => {
+    const preset = { attackSkillConfig: { builtIn: { xss: false }, user: {} } }
+    expect(applyPresetSettings(current, preset, {}).attackSkillConfig)
+      .toEqual({ builtIn: { xss: false }, user: current.attackSkillConfig.user })
+  })
+
+  test('a current config without a user map yields user: {}', () => {
+    const noUser = { attackSkillConfig: { builtIn: CUSTOM_BUILT_IN } }
+    expect(applyPresetSettings(noUser, {}, {}).attackSkillConfig).toEqual({ builtIn: DEFAULT_CONFIG.builtIn, user: {} })
+    expect(applyPresetSettings(noUser, { attackSkillConfig: { builtIn: { xss: true } } }, {}).attackSkillConfig)
+      .toEqual({ builtIn: { xss: true }, user: {} })
+  })
+
+  test('a form that holds no config at all (the create form) gets the default builtIn and user: {}', () => {
+    expect(applyPresetSettings({}, {}, {}).attackSkillConfig).toEqual({ builtIn: DEFAULT_CONFIG.builtIn, user: {} })
+  })
+
+  test('the kept user map is a copy: editing the result never edits the current form', () => {
+    const cur = { attackSkillConfig: { builtIn: CUSTOM_BUILT_IN, user: { skillA: true } } }
+    const next = applyPresetSettings(cur, {}, {}) as { attackSkillConfig: { user: Record<string, boolean> } }
+    next.attackSkillConfig.user.skillA = false
+    expect(cur.attackSkillConfig.user.skillA).toBe(true)
+  })
+
+  test.each(RECON_PRESETS.map(p => [p.id, p] as const))('built-in %s keeps the project\'s user toggles', (_id, preset) => {
+    const next = applyPresetSettings(current, { ...preset.parameters, reconPresetId: preset.id }, {})
+    expect((next.attackSkillConfig as { user: unknown }).user).toEqual({ skillA: true, skillB: false })
+  })
+})
+
+describe('applyPresetSettings', () => {
+  const current = {
+    name: 'Receiving project',
+    targetDomain: 'other.example.com',
+    roeGlobalMaxRps: 3,
+    cypherfixGithubToken: 'ghp_receiving',
+    agentOpenaiModel: 'my-configured-model',
+    aiPipelineModel: 'my-pipeline-model',
+    ffufAiUseJev: true,
+    nucleiTagsAiUseJev: true,
+    wafAiUseJev: true,
+    takeoverAiUseJev: true,
+    ffufJevBasePaths: true,
+    httpxJevPageType: true,
+    resourceEnumJevToolHealth: true,
+    hakrawlerJevSeedOrder: true,
+    serializedScanJevRank: true,
+    naabuEnabled: false,
+    katanaDepth: 9,
+    sqliLevel: 5,
+  }
+
+  test('writes the preset value for every field it names', () => {
+    const next = applyPresetSettings(current, { naabuEnabled: true, katanaDepth: 3 }, {})
+    expect(next.naabuEnabled).toBe(true)
+    expect(next.katanaDepth).toBe(3)
+  })
+
+  test('REPLACES the configuration: every unnamed preset field is reset', () => {
+    // The previous value (katanaDepth 9, sqliLevel 5) must not survive.
+    const next = applyPresetSettings(current, {}, { katanaDepth: 2 })
+    expect(next.katanaDepth).toBe(2)          // backend default
+    expect(next.sqliLevel).toBe(1)            // not in /defaults: Prisma default
+    expect(next.agentLport).toBeNull()        // nullable, no default
+    for (const key of PRESET_FIELD_KEYS) expect(next, key).toHaveProperty(key)
+  })
+
+  test('the backend default wins over the Prisma default', () => {
+    // Read the Prisma default rather than naming it, and pick a backend value
+    // that differs from it, so the test keeps proving precedence when the two
+    // defaults are aligned.
+    const prismaDefault = field('fireteamTimeoutSec')?.default
+    expect(typeof prismaDefault).toBe('number')
+    const backend = (prismaDefault as number) + 60
+    const next = applyPresetSettings({}, {}, { fireteamTimeoutSec: backend })
+    expect(next.fireteamTimeoutSec).toBe(backend)
+    expect(applyPresetSettings({}, {}, {}).fireteamTimeoutSec).toBe(prismaDefault)
+  })
+
+  test('never touches an excluded field, even when a stale preset carries it', () => {
+    // Presets saved before the exclusions existed carry all of these.
+    const stale = {
+      id: 'proj-a',
+      userId: 'user-a',
+      targetDomain: 'source.example.com',
+      roeGlobalMaxRps: 99,
+      cypherfixGithubToken: 'ghp_source',
+      name: 'Source project',
+      naabuEnabled: true,
+    }
+    const next = applyPresetSettings(current, stale, {})
+    expect(next).not.toHaveProperty('id')
+    expect(next).not.toHaveProperty('userId')
+    expect(next.targetDomain).toBe('other.example.com')
+    expect(next.roeGlobalMaxRps).toBe(3)
+    expect(next.cypherfixGithubToken).toBe('ghp_receiving')
+    expect(next.name).toBe('Receiving project')
+    expect(next.naabuEnabled).toBe(true)
+  })
+
+  test('never writes a key that is not a Project column', () => {
+    // PUT passes the body to Prisma, which rejects an unknown argument.
+    const next = applyPresetSettings(current, { user: { id: 'x' }, takeoverCnameValidationEnabled: true },
+      { takeoverCnameValidationEnabled: true, githubAccessToken: 'x' })
+    expect(next).not.toHaveProperty('user')
+    expect(next).not.toHaveProperty('takeoverCnameValidationEnabled')
+    expect(next).not.toHaveProperty('githubAccessToken')
+  })
+
+  test('applies fields the current form does not hold yet (the create form)', () => {
+    const next = applyPresetSettings({ naabuEnabled: true }, { sqliLevel: 3, trufflehogEnabled: true }, {})
+    expect(next.sqliLevel).toBe(3)
+    expect(next.trufflehogEnabled).toBe(true)
+  })
+
+  test('keeps the LLM models when the preset does not name them', () => {
+    // Built-in and AI-generated presets never do, and the backend default is a
+    // hardcoded model the user may have no provider for.
+    const next = applyPresetSettings(current, { naabuEnabled: true },
+      { agentOpenaiModel: 'claude-opus-4-6', aiPipelineModel: 'claude-opus-4-6' })
+    expect(next.agentOpenaiModel).toBe('my-configured-model')
+    expect(next.aiPipelineModel).toBe('my-pipeline-model')
+  })
+
+  test('keeps the four Jev-engine flags when a preset does not name them', () => {
+    // Whether a hook can use Jev depends on the owner's token, which no preset
+    // knows; resetting these to false would drop the project off the Jev engine.
+    const next = applyPresetSettings(current, {}, { naabuEnabled: true })
+    expect(next.ffufAiUseJev).toBe(true)
+    expect(next.nucleiTagsAiUseJev).toBe(true)
+    expect(next.wafAiUseJev).toBe(true)
+    expect(next.takeoverAiUseJev).toBe(true)
+  })
+
+  test('keeps the Jev-only hook flags when a preset does not name them', () => {
+    // Same reason as the engine flags: they need the owner's Jev token.
+    const next = applyPresetSettings(current, {}, { naabuEnabled: true })
+    expect(next.ffufJevBasePaths).toBe(true)
+    expect(next.httpxJevPageType).toBe(true)
+    expect(next.resourceEnumJevToolHealth).toBe(true)
+    expect(next.hakrawlerJevSeedOrder).toBe(true)
+    expect(next.serializedScanJevRank).toBe(true)
+  })
+
+  test('a preset that names a Jev-only flag still sets it', () => {
+    const next = applyPresetSettings(current, { httpxJevPageType: false }, {})
+    expect(next.httpxJevPageType).toBe(false)
+  })
+
+  test('applies the LLM models when the preset names them', () => {
+    const next = applyPresetSettings(current, { agentOpenaiModel: 'saved-model' }, {})
+    expect(next.agentOpenaiModel).toBe('saved-model')
+  })
+
+  test('reconPresetId follows the preset, and resets when it has none', () => {
+    const withBadge = { ...current, reconPresetId: 'stealth-recon' }
+    expect(applyPresetSettings(withBadge, { reconPresetId: 'full-active-scan' }, {}).reconPresetId)
+      .toBe('full-active-scan')
+    expect(applyPresetSettings(withBadge, {}, {}).reconPresetId).toBeNull()
+  })
+
+  test('C-1: applying a built-in never re-enables the MCP sandbox or graph writes', () => {
+    // No built-in names either switch, and an unnamed preset field is reset to
+    // its default - which is ON for both - so this used to flip them back.
+    const stealth = getPresetById('stealth-recon')!
+    const row = { ...current, mcpKaliExecEnabled: false, updateGraphDb: false }
+    const next = applyPresetSettings(row, { ...stealth.parameters, reconPresetId: stealth.id },
+      { mcpKaliExecEnabled: true, updateGraphDb: true })
+    expect(next.mcpKaliExecEnabled).toBe(false)
+    expect(next.updateGraphDb).toBe(false)
+  })
+
+  test('does not mutate its inputs', () => {
+    const cur = { ...current }
+    const preset = { naabuEnabled: true }
+    applyPresetSettings(cur, preset, {})
+    expect(cur).toEqual(current)
+    expect(preset).toEqual({ naabuEnabled: true })
+  })
+
+  test('roundtrip: project B ends up with ALL of project A\'s settings, and keeps its own scope', () => {
+    const projectA: Record<string, unknown> = {
+      ...extractPresetSettings({}),
+      id: 'proj-a',
+      targetDomain: 'a.example.com',
+      naabuEnabled: false,
+      katanaDepth: 5,
+      sqliLevel: 4,
+      trufflehogEnabled: true,
+      agentOpenaiModel: 'model-a',
+      roeGlobalMaxRps: 50,
+    }
+    const projectB: Record<string, unknown> = {
+      id: 'proj-b',
+      targetDomain: 'b.example.com',
+      katanaDepth: 1,
+      roeGlobalMaxRps: 3,
+    }
+    const saved = JSON.parse(JSON.stringify(extractPresetSettings(projectA)))
+    const next = applyPresetSettings(projectB, saved, {})
+
+    for (const key of PRESET_FIELD_KEYS) expect(next[key], key).toEqual(projectA[key])
+    expect(next.id).toBe('proj-b')
+    expect(next.targetDomain).toBe('b.example.com')
+    expect(next.roeGlobalMaxRps).toBe(3)
+  })
+})
+
+describe('pickPresetFields', () => {
+  test('keeps only the preset fields: the body a preset load saves', () => {
+    const picked = pickPresetFields({
+      id: 'proj-b', name: 'B', targetDomain: 'b.example.com', roeGlobalMaxRps: 3,
+      naabuEnabled: true, katanaDepth: 2, user: { id: 'x' },
+    })
+    expect(picked).toEqual({ naabuEnabled: true, katanaDepth: 2 })
+  })
+})
+
+// ============================================================
+// The "Preset applied" badge: loadedPreset + fingerprint
+// ============================================================
+
+describe('presetFingerprint / appliedPresetName', () => {
+  const loaded = (settings: Record<string, unknown>, name = 'Stealth') => {
+    const next = applyPresetSettings({ name: 'P', targetDomain: 'a.example.com' }, settings, {})
+    return { ...next, loadedPreset: { name, fingerprint: presetFingerprint(next) } }
+  }
+
+  test('the marker is never part of a preset itself', () => {
+    expect(PRESET_EXCLUDED_FIELDS.has('loadedPreset')).toBe(true)
+    expect(extractPresetSettings({ loadedPreset: { name: 'x', fingerprint: 'y' } })).not.toHaveProperty('loadedPreset')
+  })
+
+  test('shows the name while the settings are exactly what the preset produced', () => {
+    expect(appliedPresetName(loaded({ naabuEnabled: false }))).toBe('Stealth')
+  })
+
+  test('disappears once ANY preset field changes', () => {
+    const project = loaded({ naabuEnabled: false })
+    expect(appliedPresetName({ ...project, naabuEnabled: true })).toBeNull()
+    expect(appliedPresetName({ ...project, katanaDepth: 7 })).toBeNull()
+    expect(appliedPresetName({ ...project, agentToolPhaseMap: {} })).toBeNull()
+  })
+
+  test('stays when only the target, the name or the RoE change', () => {
+    // Those are not preset settings, so the project still runs the preset.
+    const project = loaded({ naabuEnabled: false })
+    expect(appliedPresetName({ ...project, targetDomain: 'b.example.com', name: 'Q', roeGlobalMaxRps: 5 }))
+      .toBe('Stealth')
+  })
+
+  test('comes back if the settings are changed back to the preset', () => {
+    const project = loaded({ katanaDepth: 3 })
+    const edited = { ...project, katanaDepth: 4 }
+    expect(appliedPresetName(edited)).toBeNull()
+    expect(appliedPresetName({ ...edited, katanaDepth: 3 })).toBe('Stealth')
+  })
+
+  test('survives the database round trip: jsonb reorders object keys', () => {
+    const project = loaded({ agentToolPhaseMap: { b: ['x'], a: ['y'] } })
+    const reordered = { ...project, agentToolPhaseMap: { a: ['y'], b: ['x'] } }
+    expect(appliedPresetName(JSON.parse(JSON.stringify(reordered)))).toBe('Stealth')
+  })
+
+  test('a field the data does not hold counts as its default', () => {
+    expect(presetFingerprint({})).toBe(presetFingerprint(extractPresetSettings({})))
+  })
+
+  test('no marker, or a malformed one, shows nothing', () => {
+    const project = loaded({})
+    expect(appliedPresetName({ ...project, loadedPreset: null })).toBeNull()
+    expect(appliedPresetName({ ...project, loadedPreset: { name: 'x' } })).toBeNull()
+    expect(readLoadedPreset('Stealth')).toBeNull()
+    expect(readLoadedPreset({ name: 'a', fingerprint: 'b' })).toEqual({ name: 'a', fingerprint: 'b' })
+  })
+
+  test('C-10: the badge keeps which preset it was, and drops a malformed source', () => {
+    expect(readLoadedPreset({ name: 'a', fingerprint: 'b', presetId: 'up1', source: 'user' }))
+      .toEqual({ name: 'a', fingerprint: 'b', presetId: 'up1', source: 'user' })
+    expect(readLoadedPreset({ name: 'a', fingerprint: 'b', presetId: 7, source: 'somewhere' }))
+      .toEqual({ name: 'a', fingerprint: 'b' })
+  })
+})
+
+describe('C-11: a badge outlives registry changes, and older badges still show', () => {
+  const loadedWith = (settings: Record<string, unknown>) =>
+    applyPresetSettings({ name: 'P', targetDomain: 'a.example.com' }, settings, {})
+
+  test('the digest is versioned and skips every field at its default', () => {
+    // An all-default project hashes the empty list: no field contributes, so a
+    // column added later (it reaches every row at its default) moves nothing.
+    expect(presetFingerprint({})).toBe(`v2:${cyrb53('')}`)
+    expect(presetFingerprint(extractPresetSettings({}))).toBe(`v2:${cyrb53('')}`)
+  })
+
+  test('a field off its default changes the digest; putting it back restores it', () => {
+    const at = presetFingerprint(loadedWith({}))
+    const off = presetFingerprint(loadedWith({ katanaDepth: 7 }))
+    expect(off).not.toBe(at)
+    expect(presetFingerprint({ ...loadedWith({ katanaDepth: 7 }), katanaDepth: field('katanaDepth')?.default })).toBe(at)
+  })
+
+  test('the digest does not depend on registry order', () => {
+    const data = loadedWith({ katanaDepth: 7, naabuEnabled: false })
+    const reversed = Object.fromEntries(Object.entries(data).reverse())
+    expect(presetFingerprint(reversed)).toBe(presetFingerprint(data))
+  })
+
+  // The unversioned digest shipped until now: every preset field in registry
+  // order, over the field set of its time. Checked once against that code
+  // itself; mirrored here so a change to the acceptance is caught.
+  const LEFT = ['mcpKaliExecEnabled', 'updateGraphDb']
+  const unversioned = (data: Record<string, unknown>, keys: readonly string[]) => {
+    const settings = { ...extractPresetSettings(data) }
+    for (const k of LEFT) settings[k] = k in data ? data[k] : field(k)?.default
+    return cyrb53(keys.map(k => `${k}=${canonicalJson(settings[k])}`).join('\n'))
+  }
+  const beforeC1 = fieldKeys().filter(k => PRESET_FIELD_KEYS.includes(k) || LEFT.includes(k))
+
+  test('the field set before C-1 is today\'s plus exactly the two that left', () => {
+    expect(beforeC1.length).toBe(PRESET_FIELD_KEYS.length + 2)
+    for (const k of LEFT) expect(PRESET_FIELD_KEYS).not.toContain(k)
+  })
+
+  test.each([
+    ['before C-1 removed two fields', () => beforeC1],
+    ['after C-1, before the digest was versioned', () => PRESET_FIELD_KEYS],
+  ])('an unversioned badge written %s still shows, and still hides on an edit', (_label, keys) => {
+    const data = { ...loadedWith({ naabuEnabled: false }), mcpKaliExecEnabled: false }
+    const project = JSON.parse(JSON.stringify({ ...data, loadedPreset: { name: 'Old', fingerprint: unversioned(data, keys()) } }))
+    expect(appliedPresetName(project)).toBe('Old')
+    expect(appliedPresetName({ ...project, katanaDepth: 9 })).toBeNull()
+  })
+
+  test('a versioned badge is never matched against the unversioned digests', () => {
+    const data = loadedWith({})
+    const forged = { ...data, loadedPreset: { name: 'X', fingerprint: `v2:${unversioned(data, PRESET_FIELD_KEYS)}` } }
+    expect(appliedPresetName(forged)).toBeNull()
+  })
+})
+
+/**
+ * Domain batch F3: a preset must not carry one project's target scope into
+ * another. Saving a preset from a batch project used to store its hostname list,
+ * and applying it flipped an unrelated project into batch mode pointed at scope
+ * its owner never entered.
+ */
+describe('domain batch scope never travels through a preset', () => {
+  const batchProjectForm = {
+    naabuTopPorts: '1000',
+    nucleiSeverity: ['high'],
+    targetDomain: 'single.example.com',
+    subdomainList: ['www.'],
+    ipMode: false,
+    targetIps: ['10.0.0.1'],
+    domainBatchMode: true,
+    domainBatchHosts: ['secret-a.client.com', 'secret-b.client.com'],
+    domainBatchGroups: [{ rootDomain: 'client.com', prefixes: ['secret-a.', 'secret-b.'], hosts: [] }],
+  }
+
+  test('the stored preset contains no batch field and none of the hostnames', () => {
+    const settings = extractPresetSettings(batchProjectForm)
+    expect(settings).not.toHaveProperty('domainBatchMode')
+    expect(settings).not.toHaveProperty('domainBatchHosts')
+    expect(settings).not.toHaveProperty('domainBatchGroups')
+    const serialized = JSON.stringify(settings)
+    expect(serialized).not.toContain('secret-a.client.com')
+    expect(serialized).not.toContain('client.com')
+  })
+
+  test('the preset still carries the recon config it is for', () => {
+    const settings = extractPresetSettings(batchProjectForm)
+    expect(settings.naabuTopPorts).toBe('1000')
+    expect(settings.nucleiSeverity).toEqual(['high'])
+  })
+
+  test('applying such a preset cannot overwrite the receiving project scope', () => {
+    const receiving = {
+      targetDomain: 'other.example.com',
+      domainBatchMode: false,
+      domainBatchHosts: [] as string[],
+      naabuTopPorts: '100',
+    }
+    // Even a preset that DID capture the batch (saved before F3) cannot apply it.
+    const next = applyPresetSettings(receiving, batchProjectForm, {})
+    expect(next.domainBatchMode).toBe(false)
+    expect(next.domainBatchHosts).toEqual([])
+    expect(next.targetDomain).toBe('other.example.com')
+    expect(next.naabuTopPorts).toBe('1000')
+  })
+})
+
+
+// --- Both preset paths, one guarded function -----------------------------------
+
+/**
+ * Asserted at the source, not by rendering the form: rendering `ProjectForm`
+ * needs the whole provider tree, and what went wrong here was structural. There
+ * used to be one handler per preset kind, and only one of them was guarded.
+ */
+describe('ProjectForm: both preset kinds go through loadPreset', () => {
+  const form = readFileSync(
+    fileURLToPath(new URL('../components/projects/ProjectForm/ProjectForm.tsx', import.meta.url)),
+    'utf8'
+  )
+  const loadPreset = form.slice(form.indexOf('const loadPreset = async'))
+
+  test('the built-in list, the preset modal\'s user list and the drawer all call it', () => {
+    expect(form).toMatch(/onSelect=\{\(preset\) => loadPreset\(\{ kind: 'builtin', preset \}\)\}/)
+    expect(form.match(/loadPreset\(\{ kind: 'user', \.\.\.preset \}\)/g)).toHaveLength(2)
+  })
+
+  test('it computes the preset first, confirms, and only then touches the form or saves', () => {
+    // The preset is fetched and applied to a COPY before the question, so the
+    // question can name the RoE-set settings it would change. Nothing reaches
+    // the form or the server until the person confirms.
+    const applyAt = loadPreset.indexOf('applyPresetSettings(')
+    const confirmAt = loadPreset.indexOf('await ask(')
+    const setAt = loadPreset.indexOf('setFormData(next)')
+    const saveAt = loadPreset.indexOf('presetSaveMutation.mutateAsync')
+    expect(applyAt).toBeGreaterThan(-1)
+    expect(confirmAt).toBeGreaterThan(applyAt)
+    expect(setAt).toBeGreaterThan(confirmAt)
+    expect(saveAt).toBeGreaterThan(setAt)
+  })
+
+  test('it saves only the preset fields, not the whole form, as a compare-and-swap', () => {
+    expect(loadPreset).toMatch(/pickPresetFields\(next/)
+    expect(loadPreset).toMatch(/const versioned = savedVersionRef\.current \? \{ \.\.\.saved, updatedAt: savedVersionRef\.current \} : saved/)
+    expect(loadPreset).toMatch(/mutateAsync\(\{ projectId, data: versioned/)
+  })
+
+  test('it records the loaded preset, and saves that record with the settings', () => {
+    const markAt = loadPreset.indexOf('fingerprint: presetFingerprint(next')
+    expect(markAt).toBeGreaterThan(-1)
+    // C-10: which preset, so a rename or delete of a user preset can find it.
+    expect(loadPreset).toMatch(/presetId: source\.kind === 'builtin' \? source\.preset\.id : source\.id,\s*source: source\.kind,/)
+    expect(markAt).toBeLessThan(loadPreset.indexOf('setFormData(next)'))
+    expect(loadPreset).toMatch(/const saved[^=]*= \{\s*\.\.\.pickPresetFields\(next[^}]*\),\s*loadedPreset,?\s*\}/)
+  })
+
+  test('in edit mode the badge reads the SAVED state, so an edit hides it only once saved', () => {
+    expect(form).toMatch(/const presetBadgeSource = mode === 'edit' \? baseline : formData/)
+    expect(form).toMatch(/appliedPresetName\(presetBadgeSource/)
+  })
+
+  test('no path is keyed on the `roe` name prefix', () => {
+    // The columns keep their names while their classification changed, so a
+    // prefix match survives a reclassification by accident. Comments are
+    // stripped: a line explaining what the prefix loop WAS is not a guard.
+    const code = form
+      .split('\n')
+      .filter(line => !/^\s*(\/\/|\*|\/\*)/.test(line))
+      .join('\n')
+    expect(code).not.toMatch(/startsWith\('roe'\)/)
+  })
+})

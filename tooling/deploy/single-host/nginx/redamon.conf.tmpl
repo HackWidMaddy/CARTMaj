@@ -1,0 +1,194 @@
+# CART single public origin -- HTTPS template (ACCESS_MODE=https-domain | https-ip)
+# ------------------------------------------------------------------------------------
+# Rendered by modules/nginx.sh: __TOKENS__ are replaced, then installed to
+# /etc/nginx/sites-available/CART, `nginx -t` gates the deploy, then reload.
+#
+# THREAT MODEL (verified against the codebase): the agent (:8090) exposes four WS paths;
+# THREE are UNAUTHENTICATED (/ws/kali-terminal is an anonymous root PTY; the two cypherfix
+# sockets clone repos / edit code), and /ws/agent's ticket check FAILS OPEN if its secret
+# is unset. So nginx does NOT trust the agent to authenticate: it (1) proxies ONLY the four
+# WS paths (never the agent REST surface), (2) requires a valid webapp session cookie before
+# any WS upgrade via auth_request, and (3) sits behind the operator IP/basic-auth gate.
+# The webapp (:3000) trusts X-Internal-Key as an auth bypass and injects X-User-*/ headers,
+# so those client headers are stripped (CART-proxy-common.conf).
+#
+# Tokens: __SERVER_NAME__ __SSL_CERT_REMOTE__ __SSL_KEY_REMOTE__ __CSP_CONNECT__
+#         __ACME_BLOCK__ __GATE__ __MCP_GATE__ __HTTP_PORT__ __HTTPS_PORT__
+#         __REDIRECT_HOST__
+#         __CSP_HEADER_NAME__ __WS_AUTH_REQUEST__
+
+map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+limit_req_zone $binary_remote_addr zone=login:10m rate=5r/m;
+limit_req_zone $binary_remote_addr zone=api:10m   rate=30r/s;
+# Inbound MCP server. Its own zone so an external agent's bursts do not consume
+# the UI's budget (and vice versa); the real per-caller limit is in-route, keyed
+# on the TOKEN, because one agent behind one NAT is one caller.
+limit_req_zone $binary_remote_addr zone=mcp:10m   rate=10r/s;
+limit_conn_zone $binary_remote_addr zone=conn:10m;
+# NB: server_tokens is set per-server (below), NOT here at http level -- some base
+# nginx.conf files ship an active `server_tokens` in http{}, and a second one here
+# (sites-enabled/* is included into http{}) is a fatal "duplicate directive". Server
+# context overrides http and never collides.
+
+# ---- 80: ACME challenge (if any) + redirect to HTTPS ----
+server {
+    listen __HTTP_PORT__;
+    listen [::]:__HTTP_PORT__;
+    server_name __SERVER_NAME__;
+    server_tokens off;
+__ACME_BLOCK__
+    # Redirect to the CANONICAL host (not $host) so a crafted Host header cannot turn the
+    # redirect into an open redirect / cache-poison vector.
+    location / { return 301 https://__REDIRECT_HOST__$request_uri; }
+}
+
+# ---- 443: the ONLY public app surface ----
+server {
+    # `listen ... ssl http2` (not the newer `http2 on;`) for nginx 1.18/1.24 compat
+    # (Ubuntu 22.04/24.04); harmless deprecation warning on nginx >= 1.25.1.
+    listen __HTTPS_PORT__ ssl http2;
+    listen [::]:__HTTPS_PORT__ ssl http2;
+    server_name __SERVER_NAME__;
+    server_tokens off;
+
+    ssl_certificate     __SSL_CERT_REMOTE__;
+    ssl_certificate_key __SSL_KEY_REMOTE__;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers off;
+    ssl_ecdh_curve X25519:prime256v1:secp384r1;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;               # forward secrecy: no ticket-key reuse
+    ssl_stapling on; ssl_stapling_verify on;
+    resolver 1.1.1.1 8.8.8.8 valid=300s; resolver_timeout 5s;
+
+    # Security headers (the app sets none of its own). HSTS is https-only.
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    include /etc/nginx/snippets/CART-security-headers.conf;
+    # CSP: no 'unsafe-eval' (verified: no eval/Function/Worker/WASM). style-src 'unsafe-inline'
+    # is unavoidable (runtime-injected styles from the graph/chart libs). Ships Report-Only by
+    # default (CSP_ENFORCE=true promotes to enforced after you verify the graph + terminal).
+    add_header __CSP_HEADER_NAME__ "default-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' __CSP_CONNECT__; worker-src 'self' blob:; manifest-src 'self'" always;
+
+    # Compress JSON. Ubuntu's stock nginx.conf ships `gzip on` with EVERY
+    # gzip_types line commented out, so only text/html was ever compressed and
+    # the graph payload -- highly repetitive JSON, typically 5-10x -- crossed the
+    # wire raw. Set here at server level rather than in nginx.conf so the base
+    # file (and its security settings) stay untouched by the deploy.
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 5;
+    gzip_min_length 1024;
+    gzip_types application/json application/javascript text/css text/plain
+               text/javascript application/xml image/svg+xml;
+
+    # DoS / slowloris protections
+    limit_conn conn 20;
+    client_body_timeout 15s; client_header_timeout 15s; send_timeout 15s; keepalive_timeout 20s;
+    large_client_header_buffers 8 32k;
+    client_max_body_size 60m;             # 50MB wordlist upload is the largest app-enforced cap
+    autoindex off;
+
+    # Reject exotic methods (only what the app uses).
+    if ($request_method !~ ^(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS)$) { return 405; }
+
+    # __GATE__
+
+    # Internal session validator for auth_request: 200 if the CART-auth cookie is valid,
+    # 401 otherwise. Adds real authentication in front of the unauthenticated agent WS paths.
+    location = /_CART_session {
+        internal;
+        proxy_pass http://127.0.0.1:3000/api/auth/me;
+        proxy_http_version 1.1;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Host $host;
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header X-Internal-Key "";
+        proxy_set_header X-User-Id "";
+        proxy_set_header X-User-Role "";
+    }
+
+    # ---- Agent WebSocket endpoints ONLY (nothing else on :8090 is proxied) ----
+    location ~ ^/ws/(agent|kali-terminal|cypherfix-triage|cypherfix-codefix)$ {
+        __WS_AUTH_REQUEST__
+        limit_conn conn 20;
+        include /etc/nginx/snippets/CART-proxy-common.conf;
+        proxy_pass http://127.0.0.1:8090;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 3600s; proxy_send_timeout 3600s;
+        proxy_buffering off;
+    }
+
+    location = /api/auth/login {
+        limit_req zone=login burst=3 nodelay; limit_req_status 429;
+        include /etc/nginx/snippets/CART-proxy-common.conf;
+        proxy_pass http://127.0.0.1:3000;
+        # A location with any add_header does NOT inherit server-level headers, so re-emit
+        # them here (this is the auth-cookie endpoint - it must carry HSTS + hardening).
+        add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+        add_header X-Frame-Options DENY always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy strict-origin-when-cross-origin always;
+        add_header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet" always;
+        add_header Cache-Control "no-store" always;
+    }
+    # Inbound MCP server. EXACT match (`location = `): a prefix block written as
+    # `/api/mcp-server/` does NOT match the endpoint URL `/api/mcp-server`, and
+    # the request would silently fall back to `location /api/` below - with the
+    # UI rate zone and, under GATE_MODE=basic_auth, a gate that eats the
+    # Authorization header the client needs.
+    location = /api/mcp-server {
+        limit_req zone=mcp burst=20 nodelay; limit_req_status 429;
+        # Log rate-limiting at warn, not error. The stock fail2ban
+        # `nginx-limit-req` filter anchors on "[error] ... limiting requests",
+        # and an MCP client legitimately bursts (initialize, tools/list, a
+        # fan-out of parallel calls). At error level eleven of those in a minute
+        # firewall-ban the client for 10 minutes -- taking the operator's own
+        # browser with it when they share an egress IP. Credential abuse is
+        # caught by the CART-mcp-auth jail instead, which bans on repeated
+        # 401s and cannot fire on a merely-fast client.
+        limit_req_log_level warn;
+        # A tool call is a small JSON-RPC envelope. The route caps the body at
+        # 64 KiB, but proxy_request_buffering is on by default, so without this
+        # nginx would buffer up to the server-level 60m FIRST and only then let
+        # the app reject it.
+        client_max_body_size 64k;
+        # __MCP_GATE__
+        include /etc/nginx/snippets/CART-proxy-common.conf;
+        proxy_pass http://127.0.0.1:3000;
+        proxy_read_timeout 3600s; proxy_buffering off;
+        # A location with any add_header stops inheriting the server-level ones,
+        # so the whole set is re-stated. Via the shared snippet, never by hand:
+        # hand-copying is what let the login block lose Permissions-Policy, COOP
+        # and CORP. HSTS/CSP are template-level and are re-emitted explicitly.
+        include /etc/nginx/snippets/CART-security-headers-only.conf;
+        add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+        add_header __CSP_HEADER_NAME__ "default-src 'none'; frame-ancestors 'none'" always;
+        add_header Cache-Control "no-store" always;
+    }
+    # Plugin-internal routes: the Gateway that plugin code calls (call-token auth), the
+    # runner's run list (runner key) and plugin reconciliation (internal key). They are
+    # reached only on the container networks; from the public edge they would offer an
+    # attacker those credentials' checks to probe, and nginx does not strip the headers
+    # they authenticate with. `^~` wins over every regex location, and nginx matches the
+    # decoded, slash-merged path, so `%70lugin-gateway` or `//` variants land here too.
+    location ^~ /api/plugin-gateway/ { return 404; }
+    location ^~ /api/plugin-runner/ { return 404; }
+    location ^~ /api/internal/plugins/ { return 404; }
+    location /api/ {
+        limit_req zone=api burst=60 nodelay; limit_req_status 429;
+        include /etc/nginx/snippets/CART-proxy-common.conf;
+        proxy_pass http://127.0.0.1:3000;
+        proxy_read_timeout 3600s; proxy_buffering off;   # SSE (recon/scan logs) + long imports
+    }
+    location / {
+        include /etc/nginx/snippets/CART-proxy-common.conf;
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Upgrade $http_upgrade;           # Next.js HMR/WS passthrough
+        proxy_set_header Connection $connection_upgrade;
+    }
+}

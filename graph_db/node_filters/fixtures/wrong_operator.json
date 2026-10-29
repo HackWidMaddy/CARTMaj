@@ -1,0 +1,32 @@
+{
+  "description": "An operator must fit the field type",
+  "mode": "denylist",
+  "rules": {
+    "version": 1,
+    "kinds": {
+      "vuln.nuclei": {
+        "enabled": true,
+        "action": "mute",
+        "rules": [
+          {
+            "id": "k3f9a2",
+            "name": "Glob a number",
+            "enabled": true,
+            "all": [
+              {
+                "field": "cvss",
+                "op": "glob",
+                "value": "7*"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "ok": true,
+    "active": [],
+    "errors": 1
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "description": "true is not a number",
+  "mode": "denylist",
+  "rules": {
+    "version": 1,
+    "kinds": {
+      "vuln.nuclei": {
+        "enabled": true,
+        "action": "mute",
+        "rules": [
+          {
+            "id": "k3f9a2",
+            "name": "Bool",
+            "enabled": true,
+            "all": [
+              {
+                "field": "cvss",
+                "op": "gte",
+                "value": true
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "ok": true,
+    "active": [],
+    "errors": 1
+  }
+}

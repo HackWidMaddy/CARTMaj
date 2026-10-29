@@ -1,0 +1,232 @@
+/**
+ * Unit tests for GlobalHeader – logo link behaviour.
+ *
+ * Run: npx vitest run src/components/layout/GlobalHeader/GlobalHeader.test.tsx
+ */
+
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, cleanup } from '@testing-library/react'
+import React from 'react'
+
+/* ------------------------------------------------------------------ */
+/*  Mocks – Next.js modules & child components                       */
+/* ------------------------------------------------------------------ */
+
+let mockPathname = '/graph'
+let mockIsAdmin = true
+
+vi.mock('next/navigation', () => ({
+  usePathname: () => mockPathname,
+  useRouter: () => ({ push: vi.fn() }),
+  redirect: vi.fn(),
+}))
+
+vi.mock('next/link', () => ({
+  __esModule: true,
+  default: ({ href, children, className, ...rest }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) =>
+    <a href={href} className={className} {...rest}>{children}</a>,
+}))
+
+vi.mock('next/image', () => ({
+  __esModule: true,
+  default: (props: React.ImgHTMLAttributes<HTMLImageElement>) =>
+    // eslint-disable-next-line @next/next/no-img-element, jsx-a11y/alt-text
+    <img {...props} />,
+}))
+
+vi.mock('@/components/ThemeToggle', () => ({
+  ThemeToggle: () => <div data-testid="theme-toggle" />,
+}))
+
+vi.mock('./ProjectSelector', () => ({
+  ProjectSelector: () => <div data-testid="project-selector" />,
+}))
+
+vi.mock('./UserSelector', () => ({
+  UserSelector: () => <div data-testid="user-selector" />,
+}))
+
+vi.mock('@/providers/AuthProvider', () => ({
+  useAuth: () => ({
+    user: { id: 'test-user', name: 'Test Admin', email: 'admin@test.com', role: mockIsAdmin ? 'admin' : 'standard' },
+    isLoading: false,
+    isAdmin: mockIsAdmin,
+    login: vi.fn(),
+    logout: vi.fn(),
+  }),
+}))
+
+vi.mock('@/providers/ProjectProvider', () => ({
+  useProject: () => ({
+    currentProject: null,
+    setCurrentProject: vi.fn(),
+    projectId: null,
+    userId: null,
+    setUserId: vi.fn(),
+    isLoading: false,
+  }),
+}))
+
+import { GlobalHeader } from './GlobalHeader'
+
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
+function getLogoLink() {
+  const imgs = screen.getAllByAltText('CART')
+  expect(imgs).toHaveLength(1)
+  const anchor = imgs[0].closest('a')
+  if (!anchor) throw new Error('Logo image is not wrapped in an anchor')
+  return anchor
+}
+
+/* ------------------------------------------------------------------ */
+/*  Tests                                                              */
+/* ------------------------------------------------------------------ */
+
+beforeEach(() => {
+  mockPathname = '/graph'
+  mockIsAdmin = true
+})
+
+afterEach(() => {
+  cleanup()
+})
+
+describe('GlobalHeader – logo link', () => {
+  test('logo is rendered as a link (anchor element)', () => {
+    render(<GlobalHeader />)
+    const logoLink = getLogoLink()
+    expect(logoLink.tagName).toBe('A')
+  })
+
+  test('logo links to /graph', () => {
+    render(<GlobalHeader />)
+    const logoLink = getLogoLink()
+    expect(logoLink.getAttribute('href')).toBe('/graph')
+  })
+
+  test('logo contains the brand image with correct src and alt', () => {
+    render(<GlobalHeader />)
+    const img = screen.getByAltText('CART')
+    expect(img.getAttribute('src')).toBe('/logo.png')
+    expect(img.getAttribute('width')).toBe('28')
+    expect(img.getAttribute('height')).toBe('28')
+  })
+
+  test('logo contains the "Red" accent and "Amon" text', () => {
+    render(<GlobalHeader />)
+    const logoLink = getLogoLink()
+    expect(logoLink.textContent).toContain('Red')
+    expect(logoLink.textContent).toContain('Amon')
+  })
+
+  test('logo link has the logo CSS class applied', () => {
+    render(<GlobalHeader />)
+    const logoLink = getLogoLink()
+    expect(logoLink.className).toContain('logo')
+  })
+
+  test('logo link does not open in a new tab', () => {
+    render(<GlobalHeader />)
+    const logoLink = getLogoLink()
+    expect(logoLink.getAttribute('target')).toBeNull()
+  })
+})
+
+describe('GlobalHeader – logo href is /graph on every route', () => {
+  test.each([
+    '/graph',
+    '/cypherfix',
+    '/insights',
+    '/reports',
+    '/projects',
+    '/settings',
+    '/graph/some-sub-view',
+    '/projects/123/edit',
+  ])('logo links to /graph when pathname is %s', (route) => {
+    mockPathname = route
+    render(<GlobalHeader />)
+    const logoLink = getLogoLink()
+    expect(logoLink.getAttribute('href')).toBe('/graph')
+  })
+})
+
+describe('GlobalHeader – structure', () => {
+  test('exactly one logo image exists in the header', () => {
+    render(<GlobalHeader />)
+    const imgs = screen.getAllByAltText('CART')
+    expect(imgs).toHaveLength(1)
+  })
+
+  test('logo link is distinct from the Red Zone nav link', () => {
+    render(<GlobalHeader />)
+    const logoLink = getLogoLink()
+    const redZoneLink = screen.getByRole('link', { name: /red zone/i })
+    expect(logoLink).not.toBe(redZoneLink)
+    expect(redZoneLink.getAttribute('href')).toBe('/graph')
+  })
+
+  test('header contains all core nav links', () => {
+    render(<GlobalHeader />)
+    const expectedLabels = ['Red Zone', 'CypherFix', 'Insights', 'Reports']
+    for (const label of expectedLabels) {
+      const link = screen.getByRole('link', { name: new RegExp(label, 'i') })
+      expect(link).toBeDefined()
+    }
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/*  The Plugins button (README.PLUGINS.md §7.1, F-06, F-07, R-02)      */
+/* ------------------------------------------------------------------ */
+
+describe('GlobalHeader – Plugins button', () => {
+  // The accessible name includes the "New!" badge text, so match the prefix.
+  const pluginsLink = () => screen.queryByRole('link', { name: /^plugins/i })
+
+  test('"Plugins" with the Puzzle icon, linking to /plugins', () => {
+    render(<GlobalHeader />)
+    const link = pluginsLink()!
+    expect(link.getAttribute('href')).toBe('/plugins')
+    expect(link.querySelector('svg.lucide-puzzle')).not.toBeNull()
+    expect(link.className).toContain('coreNavItem')
+  })
+
+  test('carries the green "New!" badge', () => {
+    render(<GlobalHeader />)
+    const badge = pluginsLink()!.querySelector('span[class*="newBadge"]')
+    expect(badge?.textContent).toBe('New!')
+  })
+
+  test('in the core nav group, directly before Reports', () => {
+    render(<GlobalHeader />)
+    const reports = screen.getByRole('link', { name: /^reports$/i })
+    expect(pluginsLink()!.nextElementSibling).toBe(reports)
+    expect(pluginsLink()!.closest('nav')).toBe(reports.closest('nav'))
+  })
+
+  test('shown to every signed-in user, not only admins', () => {
+    mockIsAdmin = false
+    render(<GlobalHeader />)
+    expect(pluginsLink()).not.toBeNull()
+    expect(screen.queryByRole('link', { name: /^users$/i })).toBeNull()
+  })
+
+  test.each(['/plugins', '/plugins/echo'])('active on %s', (route) => {
+    mockPathname = route
+    render(<GlobalHeader />)
+    expect(pluginsLink()!.className).toContain('coreNavItemActive')
+  })
+
+  test('not active elsewhere, and Projects is not active on /plugins', () => {
+    mockPathname = '/projects'
+    render(<GlobalHeader />)
+    expect(pluginsLink()!.className).not.toContain('coreNavItemActive')
+    cleanup()
+    mockPathname = '/plugins'
+    render(<GlobalHeader />)
+    expect(screen.getByRole('link', { name: /^projects$/i }).className).not.toContain('navItemActive')
+  })
+})

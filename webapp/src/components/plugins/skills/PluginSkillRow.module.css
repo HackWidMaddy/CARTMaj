@@ -1,0 +1,61 @@
+/* Painted from the --form-* tokens: the row sits inside the skinned Agent
+   Skills form, and the status accents need their per-theme 700 shades to stay
+   readable on a light field. */
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  border: 1px dashed var(--form-field-border);
+  border-radius: var(--radius-default);
+  background: var(--form-field-bg);
+}
+
+.chip {
+  font-size: var(--text-xs);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-full, 999px);
+  border: 1px solid color-mix(in srgb, var(--form-info) 35%, transparent);
+  color: var(--form-info);
+}
+
+.chipDormant {
+  border-color: color-mix(in srgb, var(--form-warning) 35%, transparent);
+  color: var(--form-warning);
+}
+
+.linkBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-xs);
+  color: var(--form-ink-muted);
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.linkBtn:hover {
+  color: var(--form-ink);
+}
+
+.pending {
+  font-size: var(--text-xs);
+  color: var(--form-warning);
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.rowAction {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}

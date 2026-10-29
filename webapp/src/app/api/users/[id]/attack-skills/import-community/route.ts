@@ -1,0 +1,127 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { getSession, requireUserAccess } from '@/lib/session'
+import prisma from '@/lib/prisma'
+import { writeAudit } from '@/lib/audit'
+import { DESCRIPTION_MAX_CHARS, UserSkillError } from '@/lib/userSkills'
+import {
+  USER_SKILL_AUDIT_TARGET, auditActorFor, contentSha256, createUserSkillTx, lockUserSkills,
+} from '@/lib/userSkillWrites'
+
+const AGENT_API_URL = process.env.AGENT_API_URL || 'http://localhost:8090'
+
+interface RouteParams {
+  params: Promise<{ id: string }>
+}
+
+type SkipReason = 'duplicate' | 'limit' | 'fetchFailed' | 'tooLarge' | 'invalid'
+
+const SKIP_FOR_CODE: Record<string, SkipReason> = {
+  name_taken: 'duplicate',
+  skill_limit: 'limit',
+  content_too_large: 'tooLarge',
+}
+
+/**
+ * POST /api/users/[id]/attack-skills/import-community - import every community agent skill.
+ *
+ * The same rules as an upload, through the same writer: the name a skill is CREATED with
+ * is the one checked for duplicates (case- and space-insensitive, including names created
+ * earlier in this import), and the cap is counted under the per-user lock. The texts are
+ * fetched before the transaction, so no lock is held across the network.
+ */
+export async function POST(request: NextRequest, { params }: RouteParams) {
+  try {
+    const { id } = await params
+    const __denied = await requireUserAccess(request, id)
+    if (__denied) return __denied
+
+    const catalogRes = await fetch(`${AGENT_API_URL}/community-skills`, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+    })
+
+    if (!catalogRes.ok) {
+      return NextResponse.json(
+        { error: 'Failed to fetch community skills catalog from agent service' },
+        { status: 502 }
+      )
+    }
+
+    const catalog = await catalogRes.json()
+    const skills: Array<{ id: string; name: string; description?: string }> = catalog.skills || []
+    const skippedBy: Record<SkipReason, number> = { duplicate: 0, limit: 0, fetchFailed: 0, tooLarge: 0, invalid: 0 }
+
+    const candidates: { name: unknown; description: string | null; content: unknown; communityId: string }[] = []
+    for (const skill of skills) {
+      try {
+        const contentRes = await fetch(`${AGENT_API_URL}/community-skills/${encodeURIComponent(skill.id)}`, {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json' },
+          cache: 'no-store',
+        })
+        if (!contentRes.ok) {
+          skippedBy.fetchFailed++
+          continue
+        }
+        const skillData = await contentRes.json()
+        const rawDescription = skillData.description || skill.description || null
+        candidates.push({
+          name: skillData.name || skill.name,
+          description: typeof rawDescription === 'string' ? rawDescription.slice(0, DESCRIPTION_MAX_CHARS) : null,
+          content: typeof skillData.content === 'string' ? skillData.content : '',
+          communityId: skill.id,
+        })
+      } catch {
+        skippedBy.fetchFailed++
+      }
+    }
+
+    const created = await prisma.$transaction(async (tx) => {
+      await lockUserSkills(tx, id)
+      const out: { id: string; name: string; content: string; communityId: string }[] = []
+      for (const c of candidates) {
+        try {
+          const row = await createUserSkillTx(tx, { userId: id, name: c.name, description: c.description, content: c.content })
+          out.push({ id: row.id, name: row.name, content: row.content, communityId: c.communityId })
+        } catch (e) {
+          if (!(e instanceof UserSkillError)) throw e
+          skippedBy[SKIP_FOR_CODE[e.code] ?? 'invalid']++
+        }
+      }
+      return out
+    }, { timeout: 30_000 })
+
+    const session = await getSession()
+    const actor = auditActorFor(session?.userId, id)
+    for (const s of created) {
+      await writeAudit({
+        actorId: actor.actorId,
+        action: 'user_attack_skill.import',
+        targetType: USER_SKILL_AUDIT_TARGET,
+        targetId: s.id,
+        after: {
+          name: s.name, contentSha256: contentSha256(s.content), userId: id,
+          source: 'community', communityId: s.communityId,
+          ...(actor.onBehalfOf ? { onBehalfOf: actor.onBehalfOf } : {}),
+        },
+        source: actor.source,
+      })
+    }
+
+    const skipped = Object.values(skippedBy).reduce((a, b) => a + b, 0)
+    return NextResponse.json({
+      imported: created.length,
+      importedIds: created.map((s) => s.id),
+      skipped,
+      skippedBy,
+      total: skills.length,
+    })
+  } catch (error) {
+    console.error('Failed to import community attack skills:', error)
+    return NextResponse.json(
+      { error: 'Failed to import community attack skills' },
+      { status: 500 }
+    )
+  }
+}

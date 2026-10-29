@@ -1,0 +1,83 @@
+import { NextRequest, NextResponse } from 'next/server'
+import prisma from '@/lib/prisma'
+import { requireEffectiveUser, requireProjectAccess } from '@/lib/access'
+
+// GET /api/conversations?projectId=X (conversations are scoped to the effective
+// user; the client-supplied userId is ignored as an auth input).
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url)
+    const projectId = searchParams.get('projectId')
+
+    if (!projectId) {
+      return NextResponse.json(
+        { error: 'projectId is required' },
+        { status: 400 }
+      )
+    }
+
+    const eff = await requireEffectiveUser()
+    if (eff instanceof NextResponse) return eff
+    const access = await requireProjectAccess(eff, projectId)
+    if (access instanceof NextResponse) return access
+
+    const conversations = await prisma.conversation.findMany({
+      where: { projectId, userId: eff.userId },
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        id: true,
+        sessionId: true,
+        title: true,
+        status: true,
+        agentRunning: true,
+        currentPhase: true,
+        iterationCount: true,
+        activeSkillId: true,
+        createdAt: true,
+        updatedAt: true,
+        _count: { select: { messages: true } },
+      },
+    })
+
+    return NextResponse.json(conversations)
+  } catch (error) {
+    console.error('Failed to fetch conversations:', error)
+    return NextResponse.json(
+      { error: 'Failed to fetch conversations' },
+      { status: 500 }
+    )
+  }
+}
+
+// POST /api/conversations - Create a new conversation
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json()
+    const { projectId, sessionId } = body
+
+    if (!projectId || !sessionId) {
+      return NextResponse.json(
+        { error: 'projectId and sessionId are required' },
+        { status: 400 }
+      )
+    }
+
+    const eff = await requireEffectiveUser()
+    if (eff instanceof NextResponse) return eff
+    const access = await requireProjectAccess(eff, projectId)
+    if (access instanceof NextResponse) return access
+
+    // Owner is the effective user, never a client-supplied body value.
+    const conversation = await prisma.conversation.create({
+      data: { projectId, userId: eff.userId, sessionId },
+    })
+
+    return NextResponse.json(conversation, { status: 201 })
+  } catch (error) {
+    console.error('Failed to create conversation:', error)
+    return NextResponse.json(
+      { error: 'Failed to create conversation' },
+      { status: 500 }
+    )
+  }
+}

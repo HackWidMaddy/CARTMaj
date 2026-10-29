@@ -1,0 +1,209 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { projectTargetLabel } from '@/lib/projectSummary'
+import prisma from '@/lib/prisma'
+import { getSession, isInternalRequest } from '@/lib/session'
+
+interface RouteParams {
+  params: Promise<{ id: string }>
+}
+
+// GET /api/users/[id] - Get user by ID
+export async function GET(request: NextRequest, { params }: RouteParams) {
+  try {
+    const { id } = await params
+
+    // Check permissions: admin or internal can view any user, standard can only view self
+    if (!isInternalRequest(request)) {
+      const session = await getSession()
+      if (!session) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      }
+      if (session.role !== 'admin' && session.userId !== id) {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      }
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        defaultAgentModel: true,
+        defaultAiPipelineModel: true,
+        createdAt: true,
+        updatedAt: true,
+        projects: {
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            name: true,
+            targetDomain: true,
+            ipMode: true,
+            targetIps: true,
+            subdomainList: true,
+            domainBatchMode: true,
+            domainBatchHosts: true,
+            createdAt: true,
+            updatedAt: true
+          }
+        }
+      }
+    })
+
+    if (!user) {
+      return NextResponse.json(
+        { error: 'User not found' },
+        { status: 404 }
+      )
+    }
+
+    // A batch has no targetDomain: each project row carries its scope label.
+    return NextResponse.json({
+      ...user,
+      projects: user.projects.map(({ ipMode, targetIps, subdomainList, domainBatchMode, domainBatchHosts, ...p }) => ({
+        ...p,
+        targetLabel: projectTargetLabel({ ...p, ipMode, targetIps, subdomainList, domainBatchMode, domainBatchHosts }),
+      })),
+    })
+  } catch (error) {
+    console.error('Failed to fetch user:', error)
+    return NextResponse.json(
+      { error: 'Failed to fetch user' },
+      { status: 500 }
+    )
+  }
+}
+
+// PUT /api/users/[id] - Update user
+export async function PUT(request: NextRequest, { params }: RouteParams) {
+  try {
+    const { id } = await params
+    const body = await request.json()
+    const { name, email, role, defaultAgentModel, defaultAiPipelineModel } = body
+
+    // Check permissions. S2/E2: internal-key no longer bypasses -- updating a
+    // user (esp. role escalation) requires a real session.
+    {
+      const session = await getSession()
+      if (!session) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      }
+
+      // Standard users can only update their own name/email
+      if (session.role !== 'admin' && session.userId !== id) {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      }
+
+      // Only admin can change roles
+      if (role && session.role !== 'admin') {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      }
+    }
+
+    const data: Record<string, string> = {}
+    if (name) data.name = name
+    if (email) data.email = email
+    if (role === 'admin' || role === 'standard') data.role = role
+    // Remembered model choices, used to pre-fill the next new project.
+    if (typeof defaultAgentModel === 'string') data.defaultAgentModel = defaultAgentModel
+    if (typeof defaultAiPipelineModel === 'string') data.defaultAiPipelineModel = defaultAiPipelineModel
+
+    const user = await prisma.user.update({
+      where: { id },
+      data,
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        defaultAgentModel: true,
+        defaultAiPipelineModel: true,
+        createdAt: true,
+        updatedAt: true,
+      }
+    })
+
+    return NextResponse.json(user)
+  } catch (error: unknown) {
+    console.error('Failed to update user:', error)
+
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'P2025') {
+      return NextResponse.json(
+        { error: 'User not found' },
+        { status: 404 }
+      )
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to update user' },
+      { status: 500 }
+    )
+  }
+}
+
+// DELETE /api/users/[id] - Delete user (admin only)
+export async function DELETE(request: NextRequest, { params }: RouteParams) {
+  try {
+    const { id } = await params
+
+    {  // S2/E2: deleting a user requires an admin session; no internal bypass.
+      const session = await getSession()
+      if (!session || session.role !== 'admin') {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+      }
+
+      // Prevent self-deletion
+      if (session.userId === id) {
+        return NextResponse.json(
+          { error: 'Cannot delete your own account' },
+          { status: 400 }
+        )
+      }
+    }
+
+    // Collect this user's captured-traffic body refs BEFORE the cascade removes
+    // the rows (user -> projects -> captured rows), so we can GC the now-orphaned
+    // blobs afterward (§6.6). Prisma cascade never touches the filesystem.
+    let capturedBodyRefs: (string | null)[] = []
+    try {
+      const doomed = await prisma.capturedHttpTransaction.findMany({
+        where: { userId: id }, select: { reqBodyRef: true, respBodyRef: true },
+      })
+      capturedBodyRefs = doomed.flatMap(r => [r.reqBodyRef, r.respBodyRef])
+    } catch (e) {
+      console.warn('Could not enumerate captured body refs before user delete:', e)
+    }
+
+    await prisma.user.delete({
+      where: { id }
+    })
+
+    if (capturedBodyRefs.length > 0) {
+      try {
+        const { gcOrphanBodies } = await import('@/lib/captureBodies')
+        const gc = await gcOrphanBodies(capturedBodyRefs)
+        if (gc.deleted > 0) console.log(`[user-delete] GC'd ${gc.deleted} captured body blobs for user ${id}`)
+      } catch (e) {
+        console.warn('Captured body-blob GC failed on user delete:', e)
+      }
+    }
+
+    return NextResponse.json({ success: true })
+  } catch (error: unknown) {
+    console.error('Failed to delete user:', error)
+
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'P2025') {
+      return NextResponse.json(
+        { error: 'User not found' },
+        { status: 404 }
+      )
+    }
+
+    return NextResponse.json(
+      { error: 'Failed to delete user' },
+      { status: 500 }
+    )
+  }
+}

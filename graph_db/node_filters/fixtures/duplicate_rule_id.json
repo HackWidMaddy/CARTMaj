@@ -1,0 +1,50 @@
+{
+  "description": "A rule id is used once",
+  "mode": "denylist",
+  "rules": {
+    "version": 1,
+    "kinds": {
+      "vuln.nuclei": {
+        "enabled": true,
+        "action": "mute",
+        "rules": [
+          {
+            "id": "k3f9a2",
+            "name": "Informational templates",
+            "enabled": true,
+            "all": [
+              {
+                "field": "severity",
+                "op": "in",
+                "value": [
+                  "info"
+                ]
+              }
+            ]
+          },
+          {
+            "id": "k3f9a2",
+            "name": "Again",
+            "enabled": true,
+            "all": [
+              {
+                "field": "severity",
+                "op": "in",
+                "value": [
+                  "info"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "ok": true,
+    "active": [
+      "vuln.nuclei"
+    ],
+    "errors": 1
+  }
+}

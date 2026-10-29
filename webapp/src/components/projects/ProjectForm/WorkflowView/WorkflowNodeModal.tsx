@@ -1,0 +1,195 @@
+'use client'
+
+import { useState, useCallback } from 'react'
+import type { Project } from '@prisma/client'
+import { Save, Loader2 } from 'lucide-react'
+import { Modal, WikiInfoButton } from '@/components/ui'
+import { WORKFLOW_TOOLS } from './workflowDefinition'
+
+// Section component imports
+import { SubdomainDiscoverySection } from '../sections/SubdomainDiscoverySection'
+import { UrlscanSection } from '../sections/UrlscanSection'
+import { ShodanSection } from '../sections/ShodanSection'
+import { OriginDiscoverySection } from '../sections/OriginDiscoverySection'
+import { OsintEnrichmentSection } from '../sections/OsintEnrichmentSection'
+import { NaabuSection } from '../sections/NaabuSection'
+import { MasscanSection } from '../sections/MasscanSection'
+import { NmapSection } from '../sections/NmapSection'
+import { TlsxSection } from '../sections/TlsxSection'
+import { HttpxSection } from '../sections/HttpxSection'
+import { IpAttributionSection } from '../sections/IpAttributionSection'
+import { KatanaSection } from '../sections/KatanaSection'
+import { OpenApiSection } from '../sections/OpenApiSection'
+import { ZapAjaxSpiderSection } from '../sections/ZapAjaxSpiderSection'
+import { HakrawlerSection } from '../sections/HakrawlerSection'
+import { JsluiceSection } from '../sections/JsluiceSection'
+import { FfufSection } from '../sections/FfufSection'
+import { GauSection } from '../sections/GauSection'
+import { ParamSpiderSection } from '../sections/ParamSpiderSection'
+import { KiterunnerSection } from '../sections/KiterunnerSection'
+import { ArjunSection } from '../sections/ArjunSection'
+import { ResourceEnumAiSection } from '../sections/ResourceEnumAiSection'
+import { AiSurfaceReconSection } from '../sections/AiSurfaceReconSection'
+import { JsReconSection } from '../sections/JsReconSection'
+import { SerializedScanSection } from '../sections/SerializedScanSection'
+import { SupplyChainReconSection } from '../sections/SupplyChainReconSection'
+import { NucleiSection } from '../sections/NucleiSection'
+import { GraphqlScanSection } from '../sections/GraphqlScanSection'
+import { TakeoverSection } from '../sections/TakeoverSection'
+import { VhostSniSection } from '../sections/VhostSniSection'
+import { WebCachePoisonSection } from '../sections/WebCachePoisonSection'
+import { CveLookupSection } from '../sections/CveLookupSection'
+import { MitreSection } from '../sections/MitreSection'
+import { SecurityChecksSection } from '../sections/SecurityChecksSection'
+import { TargetSection } from '../sections/TargetSection'
+import { AuthenticationSection } from '../sections/AuthenticationSection'
+
+type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
+
+interface WorkflowNodeModalProps {
+  toolId: string | null
+  onClose: () => void
+  /** Resolves TRUE only when the project was actually saved; FALSE means a
+   *  validation refusal, and the modal must stay open. */
+  onSave?: () => Promise<boolean>
+  data: FormData
+  updateField: <K extends keyof FormData>(field: K, value: FormData[K]) => void
+  projectId?: string
+  mode: 'create' | 'edit'
+  onOpenRoe?: () => void
+}
+
+export function WorkflowNodeModal({
+  toolId,
+  onClose,
+  onSave,
+  data,
+  updateField,
+  projectId,
+  mode,
+  onOpenRoe,
+}: WorkflowNodeModalProps) {
+  const [isSaving, setIsSaving] = useState(false)
+
+  const handleSave = useCallback(async () => {
+    if (!onSave || isSaving) return
+    setIsSaving(true)
+    try {
+      // Close ONLY on a real save. onSave resolves normally when it refuses on a
+      // validation error (missing project name, no batch hostnames, a blocked
+      // target), so closing on "resolved" dismissed the operator's settings and
+      // their unsaved input, leaving them on the workflow graph with nothing but
+      // a transient alert to explain why. Staying open keeps the offending field
+      // on screen to fix.
+      if (await onSave()) onClose()
+    } catch {
+      // errors handled by onSave caller
+    } finally {
+      setIsSaving(false)
+    }
+  }, [onSave, onClose, isSaving])
+
+  if (!toolId) return null
+
+  const isInput = toolId === 'input'
+  const toolDef = isInput ? null : WORKFLOW_TOOLS.find(t => t.id === toolId)
+  const title = isInput ? 'Target & Modules' : (toolDef?.label ?? toolId)
+
+  function renderSection() {
+    const baseProps = { data, updateField }
+    const extendedProps = { ...baseProps, projectId, mode }
+
+    switch (toolId) {
+      case 'SubdomainDiscovery': return <SubdomainDiscoverySection {...baseProps} />
+      case 'Urlscan':           return <UrlscanSection {...baseProps} />
+      case 'Shodan':            return <ShodanSection {...baseProps} />
+      case 'OsintEnrichment':   return <OsintEnrichmentSection {...baseProps} />
+      case 'OriginDiscovery':   return <OriginDiscoverySection {...baseProps} />
+      case 'Naabu':             return <NaabuSection {...baseProps} />
+      case 'Masscan':           return <MasscanSection {...baseProps} />
+      case 'Nmap':              return <NmapSection {...baseProps} />
+      case 'Tlsx':              return <TlsxSection {...baseProps} />
+      case 'Httpx':             return <HttpxSection {...baseProps} />
+      case 'IpAttribution':     return <IpAttributionSection {...baseProps} />
+      case 'Katana':            return <KatanaSection {...baseProps} />
+      case 'OpenAPI':           return <OpenApiSection {...baseProps} projectId={mode === 'edit' ? projectId : undefined} />
+      case 'ZapAjaxSpider':     return <ZapAjaxSpiderSection {...baseProps} />
+      case 'Hakrawler':         return <HakrawlerSection {...baseProps} />
+      case 'Jsluice':           return <JsluiceSection {...baseProps} />
+      case 'Ffuf':              return <FfufSection {...extendedProps} />
+      case 'Gau':               return <GauSection {...baseProps} />
+      case 'ParamSpider':       return <ParamSpiderSection {...baseProps} />
+      case 'Kiterunner':        return <KiterunnerSection {...baseProps} />
+      case 'Arjun':             return <ArjunSection {...baseProps} />
+      case 'EndpointAiClassifier': return <ResourceEnumAiSection {...baseProps} />
+      case 'AiSurfaceRecon':    return <AiSurfaceReconSection {...baseProps} />
+      case 'JsRecon':           return <JsReconSection {...extendedProps} />
+      case 'SerializedScan':    return <SerializedScanSection {...baseProps} />
+      case 'SupplyChainRecon':  return <SupplyChainReconSection {...baseProps} />
+      case 'Nuclei':            return <NucleiSection {...baseProps} />
+      case 'GraphqlScan':       return <GraphqlScanSection {...extendedProps} />
+      case 'SubdomainTakeover': return <TakeoverSection {...baseProps} />
+      case 'VhostSni':          return <VhostSniSection {...baseProps} />
+      case 'WebCachePoison':    return <WebCachePoisonSection {...baseProps} />
+      case 'CveLookup':         return <CveLookupSection {...baseProps} />
+      case 'Mitre':             return <MitreSection {...baseProps} />
+      case 'SecurityChecks':    return <SecurityChecksSection {...baseProps} />
+      case 'Uncover':           return <OsintEnrichmentSection {...baseProps} />
+      case 'input':             return (
+        <>
+          {mode === 'create' && onOpenRoe && (
+            <p style={{ margin: '0 0 12px', fontSize: '0.85rem' }}>
+              Have a Rules of Engagement document?{' '}
+              <button
+                type="button"
+                onClick={onOpenRoe}
+                style={{ background: 'none', border: 'none', padding: 0, color: 'var(--color-accent, #3b82f6)', cursor: 'pointer', textDecoration: 'underline' }}
+              >
+                Upload it in RoE
+              </button>{' '}
+              and its limits fill this form for you to review.
+            </p>
+          )}
+          <TargetSection {...extendedProps} />
+          <AuthenticationSection {...extendedProps} />
+        </>
+      )
+      default:                  return <p>No settings available for this module.</p>
+    }
+  }
+
+  return (
+    <Modal
+      isOpen={!!toolId}
+      onClose={onClose}
+      title={title}
+      size="large"
+      closeOnOverlayClick={false}
+      closeOnEscape={false}
+      headerActions={(
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+          {toolId && (
+            <WikiInfoButton
+              target={toolId}
+              title={`Open ${title} wiki page`}
+            />
+          )}
+          {onSave && (
+            <button
+              type="button"
+              className="primaryButton"
+              onClick={handleSave}
+              disabled={isSaving}
+              style={{ fontSize: '12px', padding: '4px 12px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+            >
+              {isSaving ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Save size={12} />}
+              {isSaving ? 'Saving...' : 'Update Settings'}
+            </button>
+          )}
+        </div>
+      )}
+    >
+      {renderSection()}
+    </Modal>
+  )
+}

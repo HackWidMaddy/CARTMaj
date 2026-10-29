@@ -1,0 +1,715 @@
+/* Priority Board. Mirrors ScanScheduleTable's slot handling: the graph page's
+   .content is position:relative, so anchor with inset:0 and scroll inside.
+
+   THE BADGE PALETTE. Everything on this board that carries meaning through
+   colour -- tier, verdict, section, signal -- draws from the six tinted
+   triplets below rather than from a hex at the call site. They are declared
+   twice, once per theme, because a tint that reads on near-black is the exact
+   tint that vanishes on white: the dark set is a translucent wash under a light
+   text colour, the light set an opaque pastel under a dark one. Measured, the
+   worst pair here is 6.1:1 in either theme, so a chip stays legible at the
+   11px it is actually set in without leaning on its border to be read.
+
+   The previous set was a single dark-theme hex per chip behind `var(--x, #hex)`
+   fallbacks whose tokens (--chip-bg, --border-color, --accent-fg) were never
+   defined anywhere, so the fallback WAS the value -- slate chips with grey text
+   sitting on a white page. */
+.wrap {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+
+  --pb-danger-bg: rgba(239, 68, 68, 0.16);
+  --pb-danger-bd: rgba(248, 113, 113, 0.45);
+  --pb-danger-fg: #fca5a5;
+
+  --pb-warn-bg: rgba(249, 115, 22, 0.16);
+  --pb-warn-bd: rgba(251, 146, 60, 0.45);
+  --pb-warn-fg: #fdba74;
+
+  --pb-amber-bg: rgba(245, 158, 11, 0.16);
+  --pb-amber-bd: rgba(251, 191, 36, 0.45);
+  --pb-amber-fg: #fcd34d;
+
+  --pb-info-bg: rgba(59, 130, 246, 0.16);
+  --pb-info-bd: rgba(96, 165, 250, 0.45);
+  --pb-info-fg: #93c5fd;
+
+  --pb-ok-bg: rgba(34, 197, 94, 0.16);
+  --pb-ok-bd: rgba(74, 222, 128, 0.45);
+  --pb-ok-fg: #86efac;
+
+  --pb-neutral-bg: rgba(255, 255, 255, 0.07);
+  --pb-neutral-bd: var(--border-strong);
+  --pb-neutral-fg: var(--color-gray-300);
+
+  /* De-emphasised ink for the 11px supporting lines. --text-tertiary is one
+     grey for both themes and measures 3.6-4.8:1 behind them, i.e. under AA at
+     the size they are actually set in; this is the dimmest pair that holds. */
+  --pb-muted-fg: var(--color-gray-400);
+}
+
+:global([data-theme='light']) .wrap {
+  --pb-danger-bg: #fee2e2;
+  --pb-danger-bd: #f0a5a5;
+  --pb-danger-fg: #991b1b;
+
+  --pb-warn-bg: #ffedd5;
+  --pb-warn-bd: #f2b87f;
+  --pb-warn-fg: #9a3412;
+
+  --pb-amber-bg: #fef3c7;
+  --pb-amber-bd: #e2be55;
+  --pb-amber-fg: #854d0e;
+
+  --pb-info-bg: #dbeafe;
+  --pb-info-bd: #93c5fd;
+  --pb-info-fg: #1e40af;
+
+  --pb-ok-bg: #dcfce7;
+  --pb-ok-bd: #86efac;
+  --pb-ok-fg: #166534;
+
+  --pb-neutral-bg: var(--color-gray-100);
+  --pb-neutral-bd: var(--color-gray-300);
+  --pb-neutral-fg: var(--color-gray-700);
+  --pb-muted-fg: var(--color-gray-600);
+}
+
+/* ── Toolbar ───────────────────────────────────────────────────────────────
+   One line for everything: the leading section's header on the left, the tier
+   filters and the run button together on the right. The board is mostly table,
+   so every row of chrome removed is a row of findings gained.
+
+   It is a fixed band above the scroller, on the same --bg-secondary surface the
+   All Nodes toolbar uses, so the three stacked surfaces -- tab bar, toolbar,
+   rows -- step down in shade instead of all reading as one flat sheet. */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.board {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+}
+
+.filters {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+  /* Right-aligns the filters + buttons whether or not a section header is
+     present on the left, so the toolbar looks the same on an empty board. */
+  margin-left: auto;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* ── Controls ──────────────────────────────────────────────────────────── */
+
+/* The tier filters double as the board's legend, so each one wears its own
+   tier colour at rest and fills with it when selected. */
+.chip {
+  padding: 3px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.chip:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.chip:focus-visible,
+.button:focus-visible,
+.runBannerBtn:focus-visible,
+.verdictButton:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 1px;
+}
+
+.chipActive {
+  background: var(--pb-neutral-bg);
+  color: var(--text-primary);
+  border-color: var(--text-tertiary);
+  font-weight: var(--font-semibold);
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.button:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* A run in flight that the operator is not actively watching. Deliberately a
+   strip and not the blocking overlay: during a long background run the findings
+   table stays readable and the verdicts fill in underneath. */
+.runBanner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--pb-info-bd);
+  border-radius: var(--radius-md);
+  background: var(--pb-info-bg);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+
+.runBannerText {
+  flex: 1;
+  min-width: 0;
+}
+
+.runBannerBtn {
+  padding: 3px 10px;
+  border: 1px solid var(--pb-info-bd);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.runBannerBtn:hover {
+  background: var(--bg-hover);
+}
+
+.truncationNotice {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--pb-amber-bd);
+  border-radius: var(--radius-md);
+  background: var(--pb-amber-bg);
+  color: var(--pb-amber-fg);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+}
+
+/* ── Table ─────────────────────────────────────────────────────────────────
+   The shared table skin: every colour below is a --table-* token from
+   tokens/semantic.css, which is what makes this board and every other table in
+   the app read as one product. Change the token, not the rule. */
+.tableScroll {
+  /* Wide tables scroll themselves; the page must never scroll sideways. */
+  overflow-x: auto;
+  border: 1px solid var(--table-border);
+  border-radius: var(--radius-md);
+  background: var(--table-surface);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+
+.table th {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  background: var(--table-header-bg);
+  color: var(--table-header-fg);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--table-header-border);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--table-row-border);
+  color: var(--table-cell-fg);
+  vertical-align: top;
+}
+
+.table tbody tr {
+  transition: background 0.1s ease;
+}
+
+.table tbody tr:nth-child(even) {
+  background: var(--table-row-zebra-bg);
+}
+
+.table tbody tr:hover,
+.table tbody tr:nth-child(even):hover {
+  background: var(--table-row-hover-bg);
+}
+
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.table td.name {
+  color: var(--table-cell-fg);
+  font-weight: var(--font-medium);
+  max-width: 280px;
+  overflow-wrap: anywhere;
+}
+
+.table td.where,
+.table td.reason {
+  max-width: 320px;
+  color: var(--table-cell-fg-muted);
+  overflow-wrap: anywhere;
+}
+
+/* `overflow-wrap: anywhere` with no floor let the host column collapse to a
+   few characters and hyphenate a hostname mid-label ("app.example.te / st")
+   whenever the action buttons claimed the width. The Why column did the same
+   to a review's sentence, one word fragment per line; the wrapper scrolls
+   sideways instead. */
+.table td.where {
+  min-width: 140px;
+}
+
+.table td.reason {
+  min-width: 200px;
+}
+
+/* Rank number: the headline of the ranked list. */
+.table td.rank {
+  font-variant-numeric: tabular-nums;
+  color: var(--pb-muted-fg);
+  font-weight: var(--font-semibold);
+  white-space: nowrap;
+}
+
+/* The cell stays a normal table cell so its row border aligns with the others.
+   Making the <td> itself display:flex took it out of table layout and detached
+   the horizontal divider when the chips wrapped to a second line. */
+.signalsCell {
+  max-width: 260px;
+}
+
+.signals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* One chip per fired scoring signal -- the transparent "why it ranked here".
+   Neutral on purpose: these explain the score, they do not rank it, so they
+   must not out-shout the tier chip sitting one column to the left. */
+.signalChip {
+  padding: 1px 7px;
+  border-radius: var(--radius-full);
+  background: var(--pb-neutral-bg);
+  border: 1px solid var(--pb-neutral-bd);
+  color: var(--pb-neutral-fg);
+  font-size: 11px;
+  font-weight: var(--font-medium);
+  white-space: nowrap;
+}
+
+.confidence {
+  color: var(--pb-muted-fg);
+}
+
+.empty {
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+}
+
+.error {
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
+  color: var(--pb-danger-fg);
+  font-size: var(--text-xs);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 900px) {
+  .toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .filters {
+    margin-left: 0;
+  }
+}
+
+/* ── Board sections ───────────────────────────────────────────────────────
+   Four sections, always in the same order. Ranked findings first; everything
+   else is deliberately below it rather than mixed in, because "not triaged
+   yet" and "resolved" answer different questions from "what do I do next".
+
+   Each section owns a colour, carried by the count badge and nothing else: it
+   is the one element repeated in both placements (inside the toolbar for the
+   first section, above its own table for the rest), so it is the only place a
+   section tint can live without the two placements diverging. */
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.sectionHeading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.sectionCount {
+  padding: 1px 8px;
+  border-radius: var(--radius-full);
+  background: var(--pb-neutral-bg);
+  border: 1px solid var(--pb-neutral-bd);
+  color: var(--pb-neutral-fg);
+  font-size: 11px;
+  font-weight: var(--font-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+.countRanked {
+  background: var(--pb-danger-bg);
+  border-color: var(--pb-danger-bd);
+  color: var(--pb-danger-fg);
+}
+
+.countNotTriaged {
+  background: var(--pb-amber-bg);
+  border-color: var(--pb-amber-bd);
+  color: var(--pb-amber-fg);
+}
+
+.countResolved {
+  background: var(--pb-ok-bg);
+  border-color: var(--pb-ok-bd);
+  color: var(--pb-ok-fg);
+}
+
+.sectionHead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  min-width: 0;        /* lets the blurb ellipsise rather than push the chips */
+}
+
+.sectionBlurb {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: var(--font-normal);
+  color: var(--text-secondary);
+}
+
+/* ── Score cell: the number, its tier, and the factors behind it ───────── */
+.scoreCell {
+  white-space: nowrap;
+  min-width: 200px;
+}
+
+.dispositionCell {
+  white-space: nowrap;
+}
+
+.scoreValue {
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-bold);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  margin-right: var(--space-1-5);
+}
+
+.tierChip,
+.verdictChip {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: var(--font-semibold);
+  border: 1px solid var(--pb-neutral-bd);
+  background: var(--pb-neutral-bg);
+  color: var(--pb-neutral-fg);
+}
+
+.tierT1 { background: var(--pb-danger-bg); border-color: var(--pb-danger-bd); color: var(--pb-danger-fg); }
+.tierT2 { background: var(--pb-warn-bg);   border-color: var(--pb-warn-bd);   color: var(--pb-warn-fg); }
+.tierT3 { background: var(--pb-amber-bg);  border-color: var(--pb-amber-bd);  color: var(--pb-amber-fg); }
+.tierT4 { background: var(--pb-neutral-bg); border-color: var(--pb-neutral-bd); color: var(--pb-neutral-fg); }
+
+/* The one-line derivation, so the score is never just a number an operator
+   has to take on trust. */
+.factorLine {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: 11px;
+  color: var(--pb-muted-fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.verdictCell {
+  min-width: 150px;
+}
+
+/* A verdict is a conclusion, so it is coloured by what it concluded: a
+   confirmed finding is the same red as an Act-now tier, an unsettled one
+   amber, a dismissal deliberately grey. "Not reviewed" is the bare neutral
+   chip -- absence of a verdict, not a verdict of its own. */
+.verdictReal      { background: var(--pb-danger-bg); border-color: var(--pb-danger-bd); color: var(--pb-danger-fg); }
+.verdictDoubtful  { background: var(--pb-amber-bg);  border-color: var(--pb-amber-bd);  color: var(--pb-amber-fg); }
+.verdictDismissed { background: var(--pb-neutral-bg); border-color: var(--pb-neutral-bd); color: var(--pb-muted-fg); }
+
+/* A human verdict is never overwritten by an AI re-run, so it outranks every
+   AI colour above and says so. */
+.verdictHuman {
+  background: var(--pb-info-bg);
+  border-color: var(--pb-info-bd);
+  color: var(--pb-info-fg);
+}
+
+/* The exact text the AI quoted. Verified server-side as a substring of the
+   evidence we sent, which is what makes it worth showing at all. */
+.quote {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: 11px;
+  font-style: italic;
+  color: var(--pb-muted-fg);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fixLever {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: 11px;
+  font-weight: var(--font-medium);
+  color: var(--pb-info-fg);
+}
+
+.staleTag {
+  display: inline-block;
+  margin-left: var(--space-1-5);
+  padding: 1px 7px;
+  border-radius: var(--radius-full);
+  background: var(--pb-neutral-bg);
+  border: 1px solid var(--pb-neutral-bd);
+  color: var(--pb-muted-fg);
+  font-size: 11px;
+  font-weight: var(--font-medium);
+  white-space: nowrap;
+}
+
+/* Same trap as .signalsCell: a display:flex <td> leaves table layout, so it
+   stops picking up the row's background and the zebra stripe ended at the Why
+   column. Inline-flex buttons inside a plain cell lay out identically. */
+.rowActions {
+  white-space: nowrap;
+  text-align: right;
+}
+
+.rowActions > button + button {
+  margin-left: var(--space-1);
+}
+
+.verdictButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: var(--font-medium);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-default);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.verdictButton:hover:not(:disabled) {
+  background: var(--pb-neutral-bg);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.verdictButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Layers: who decided, and how far it moved the rules' score ─────────── */
+
+/* A row opens the detail panel. The name is also a real button, so the panel
+   is reachable from the keyboard and not only by pointer. */
+.row {
+  cursor: pointer;
+}
+
+.table tbody tr.rowSelected {
+  background: var(--table-row-hover-bg);
+  box-shadow: inset 3px 0 0 var(--pb-info-bd);
+}
+
+.nameButton {
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.nameButton:hover {
+  text-decoration: underline;
+}
+
+.nameButton:focus-visible,
+.filterSelect:focus-visible,
+.rowErrorButton:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 1px;
+}
+
+/* "rules 62.5 · Act soon  +12.5": the score before a review or a decision
+   moved it. Muted, because the final score to its left is the one to act on. */
+.baseLine {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: 11px;
+  color: var(--pb-muted-fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.deltaUp {
+  color: var(--pb-danger-fg);
+  font-weight: var(--font-semibold);
+}
+
+.deltaDown {
+  color: var(--pb-ok-fg);
+  font-weight: var(--font-semibold);
+}
+
+/* A factor value a review or a decision changed. <mark> carries the meaning
+   for assistive tech; the browser's yellow is replaced by the board's tint. */
+.factorMoved {
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--pb-info-bg);
+  color: var(--pb-info-fg);
+  font-weight: var(--font-semibold);
+}
+
+.chipStack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* A review whose evidence has changed no longer counts; the dashed edge says
+   "was" without hiding what it concluded. */
+.verdictStale {
+  border-style: dashed;
+  opacity: 0.8;
+}
+
+/* The "Decided by" menu. A native select: the counts sit in the option text,
+   and it wraps with the chips below 900px like everything else here. */
+.filterSelect {
+  padding: 2px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  max-width: 100%;
+}
+
+.filterSelectActive {
+  background: var(--pb-info-bg);
+  border-color: var(--pb-info-bd);
+  color: var(--pb-info-fg);
+}
+
+.rowError {
+  margin-top: var(--space-1);
+  max-width: 260px;
+  margin-left: auto;
+  white-space: normal;
+  text-align: left;
+  font-size: 11px;
+  color: var(--pb-danger-fg);
+}
+
+.rowErrorButton {
+  margin-left: var(--space-1);
+  padding: 0 6px;
+  border: 1px solid var(--pb-danger-bd);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}

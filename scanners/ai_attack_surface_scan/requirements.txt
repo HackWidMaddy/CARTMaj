@@ -1,0 +1,6 @@
+# AI Attack Surface scan — BASE (shared spine) dependencies only.
+# The attack tools are installed into per-tool virtualenvs (see the Dockerfile),
+# because their dependencies conflict and cannot share one environment:
+#   garak 0.15.1 needs datasets<4.0 ; pyrit 0.14.0 needs datasets>=4.8.0
+#   (and promptfoo is a Node.js tool). The spine talks to Neo4j only.
+neo4j>=5.0.0

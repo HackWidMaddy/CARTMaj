@@ -1,0 +1,34 @@
+{
+  "description": "An allowlist keeping high and above",
+  "mode": "allowlist",
+  "rules": {
+    "version": 1,
+    "kinds": {
+      "vuln.nuclei": {
+        "enabled": true,
+        "action": "mute",
+        "rules": [
+          {
+            "id": "k3f9a2",
+            "name": "High and above",
+            "enabled": true,
+            "all": [
+              {
+                "field": "severity",
+                "op": "gte",
+                "value": "high"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "ok": true,
+    "active": [
+      "vuln.nuclei"
+    ],
+    "errors": 0
+  }
+}

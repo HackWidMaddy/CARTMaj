@@ -1,0 +1,367 @@
+.page {
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: 100%;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.title {
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.subtitle {
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+}
+
+.spacer { flex: 1; }
+
+.count {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+/* Filter bar */
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-3);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.field label {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+}
+
+.input,
+.select {
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 6px 8px;
+  font-size: var(--text-sm);
+  min-width: 120px;
+}
+
+.input:focus,
+.select:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+.toggles {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.toggleItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.clearBtn {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  padding: 6px 10px;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.clearBtn:hover { background: var(--bg-hover); }
+
+/* Table */
+.tableWrap {
+  overflow-x: auto;
+  border: 1px solid var(--table-border);
+  border-radius: var(--radius-md);
+  background: var(--table-surface);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.table th {
+  text-align: left;
+  padding: 10px 12px;
+  background: var(--table-header-bg);
+  color: var(--table-header-fg);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  border-bottom: 1px solid var(--table-header-border);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.sortable { cursor: pointer; }
+.sortable:hover { color: var(--text-secondary); }
+
+.table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--table-row-border);
+  color: var(--table-cell-fg);
+  white-space: nowrap;
+}
+
+.table tbody tr:nth-child(even) {
+  background: var(--table-row-zebra-bg);
+}
+
+.row { cursor: pointer; }
+/* Out-ranks the zebra stripe above, which a bare .row:hover would lose to. */
+.table tbody tr.row:hover,
+.table tbody tr.row:nth-child(even):hover { background: var(--table-row-hover-bg); }
+
+.pathCell {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--table-cell-fg);
+}
+
+.mono { font-family: var(--font-mono, monospace); }
+
+.badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+}
+
+.badgeRecon { color: var(--accent-primary); border-color: var(--accent-primary); }
+.badgeAgent { color: var(--accent-secondary, #7aa2f7); border-color: var(--accent-secondary, #7aa2f7); }
+.badgeOperator { color: var(--accent-warning, #e0af68); border-color: var(--accent-warning, #e0af68); }
+
+.status2xx { color: #3fb950; }
+.status3xx { color: #58a6ff; }
+.status4xx { color: var(--status-warning, #d29922); }
+.status5xx { color: var(--status-error); }
+
+.flags { display: inline-flex; gap: 4px; }
+.flag {
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border-default);
+  color: var(--text-tertiary);
+}
+.flagWarn { color: var(--status-warning, #d29922); border-color: var(--status-warning, #d29922); }
+
+/* Pagination */
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  justify-content: flex-end;
+  padding: var(--space-2) 0;
+}
+
+.pageBtn {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  padding: 5px 12px;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.pageBtn:disabled { opacity: 0.4; cursor: default; }
+.pageInfo { font-size: var(--text-sm); color: var(--text-tertiary); }
+
+/* Distinct admin "Settings" button on the toolbar (accent, icon + text). */
+.settingsBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--accent-subtle, var(--bg-tertiary));
+  border: 1px solid var(--accent, var(--border-strong, var(--border-default)));
+  border-radius: var(--radius-sm);
+  color: var(--accent, var(--text-primary));
+  padding: 5px 12px;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium, 500);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.settingsBtn:hover { background: var(--bg-hover); }
+
+/* States */
+.empty, .loading {
+  padding: var(--space-8);
+  text-align: center;
+  color: var(--text-tertiary);
+}
+
+.noProject {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-8);
+  color: var(--text-tertiary);
+  text-align: center;
+}
+.noProjectTitle { font-size: var(--text-lg); color: var(--text-primary); font-weight: var(--font-semibold); }
+.noProjectText { font-size: var(--text-sm); max-width: 380px; }
+
+/* Detail drawer */
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+}
+.detailSection { display: flex; flex-direction: column; gap: var(--space-2); }
+.detailLabel {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-tertiary);
+}
+.kv { display: grid; grid-template-columns: 140px 1fr; gap: 4px 12px; }
+.kv dt { color: var(--text-tertiary); }
+.kv dd { color: var(--text-primary); word-break: break-all; margin: 0; }
+
+.pre {
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.copyBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  padding: 4px 10px;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.copyBtn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.copyBtn svg { flex: none; }
+
+/* Section header row: label on the left, a copy button on the right. */
+.sectionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* Small square copy button used per section (headers / body / url). */
+.iconCopy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  box-sizing: border-box;
+  padding: 0;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.iconCopy:hover:not(:disabled) {
+  background: var(--accent, var(--bg-hover));
+  border-color: var(--accent, var(--border-default));
+  color: var(--accent-contrast, var(--text-primary));
+}
+.iconCopy:disabled { opacity: 0.4; cursor: not-allowed; }
+.iconCopy svg { flex: none; width: 13px; height: 13px; display: block; }
+
+/* URL cell: text wraps, copy button stays inline at the top-right. */
+.kv dd .urlText { flex: 1 1 auto; min-width: 0; }
+.kv dd:has(.iconCopy) {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+/* Per-row "view detail" affordance (opens the drawer). Right-aligned so it sits
+   at the extreme right of each row; the whole row is still clickable. */
+.detailCell { text-align: right; width: 44px; white-space: nowrap; padding-right: 12px; }
+.detailBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  box-sizing: border-box;
+  background: var(--bg-secondary, rgba(127, 127, 127, 0.08));
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  padding: 0;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+/* Force the lucide SVG to its intended size regardless of any global reset
+   (a width:1% cell + a max-width:100% reset would otherwise collapse it). */
+.detailBtn svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+.detailBtn:hover {
+  background: var(--accent, var(--bg-hover));
+  border-color: var(--accent, var(--border-default));
+  color: var(--accent-contrast, var(--text-primary));
+}

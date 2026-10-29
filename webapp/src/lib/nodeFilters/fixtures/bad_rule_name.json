@@ -1,0 +1,34 @@
+{
+  "description": "Rule names are restricted at the source",
+  "mode": "denylist",
+  "rules": {
+    "version": 1,
+    "kinds": {
+      "vuln.nuclei": {
+        "enabled": true,
+        "action": "mute",
+        "rules": [
+          {
+            "id": "k3f9a2",
+            "name": "<img src=x onerror=alert(1)>",
+            "enabled": true,
+            "all": [
+              {
+                "field": "severity",
+                "op": "in",
+                "value": [
+                  "info"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "ok": true,
+    "active": [],
+    "errors": 1
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "_comment": "Shared vectors for the two Public Suffix List helpers: webapp/src/lib/publicSuffix.ts (tldts) and recon/helpers/public_suffix.py (publicsuffixlist), private section on. Stable suffixes only, so a version bump that changes one signals a real list change. org is null when the host IS a public suffix.",
+  "vectors": [
+    {"host": "example.com", "publicSuffix": "com", "org": "example.com"},
+    {"host": "a.b.c.d.example.com", "publicSuffix": "com", "org": "example.com"},
+    {"host": "acme.co.uk", "publicSuffix": "co.uk", "org": "acme.co.uk"},
+    {"host": "x.y.example.co.uk", "publicSuffix": "co.uk", "org": "example.co.uk"},
+    {"host": "acme.com.cn", "publicSuffix": "com.cn", "org": "acme.com.cn"},
+    {"host": "www.shop.acme.com.hk", "publicSuffix": "com.hk", "org": "acme.com.hk"},
+    {"host": "acme.bet.br", "publicSuffix": "bet.br", "org": "acme.bet.br"},
+    {"host": "co.uk", "publicSuffix": "co.uk", "org": null},
+    {"host": "com.cn", "publicSuffix": "com.cn", "org": null},
+    {"host": "bet.br", "publicSuffix": "bet.br", "org": null},
+    {"host": "com.vn", "publicSuffix": "com.vn", "org": null},
+    {"host": "github.io", "publicSuffix": "github.io", "org": null},
+    {"host": "alice.github.io", "publicSuffix": "github.io", "org": "alice.github.io"},
+    {"host": "com", "publicSuffix": "com", "org": null},
+    {"host": "example.test", "publicSuffix": "test", "org": "example.test"},
+    {"host": "v1.api.nwlab.test", "publicSuffix": "test", "org": "nwlab.test"}
+  ]
+}

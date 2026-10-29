@@ -1,0 +1,2198 @@
+'use client'
+
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useSearchParams } from 'next/navigation'
+import { Plus, Pencil, Trash2, Loader2, Eye, EyeOff, Upload, Download, Swords, RotateCw, Copy, Check, ExternalLink, ChevronDown, ChevronRight, Info, BookOpen, Server, KeyRound } from 'lucide-react'
+import { useProject } from '@/providers/ProjectProvider'
+import { useAuth } from '@/providers/AuthProvider'
+import { useVersionCheck } from '@/hooks/useVersionCheck'
+// Shared with the inline shortcuts the scan sections render, so a key cannot be
+// described one way here and another way on the card that asks for it.
+import { CredentialDrawer } from '@/components/settings/CredentialDrawer'
+import { githubKeyGroups, trufflehogKeyGroups, TRUFFLEHOG_KEY_FIELDS } from '@/lib/credentialFields'
+import { useUnsavedChangesGuard } from '@/hooks/useUnsavedChangesGuard'
+import { LlmProviderForm } from '@/components/settings/LlmProviderForm'
+import McpServersTab from '@/components/settings/mcp/McpServersTab'
+import McpTokensTab from '@/components/settings/mcp-tokens/McpTokensTab'
+import type { ProviderData } from '@/components/settings/LlmProviderForm'
+import { TradecraftResourceForm } from '@/components/settings/TradecraftResourceForm'
+import { TradecraftResourceList } from '@/components/settings/TradecraftResourceList'
+import { PROVIDER_TYPES, isChatProvider } from '@/lib/llmProviderPresets'
+import { Modal } from '@/components/ui/Modal/Modal'
+import { useAlertModal, useToast, WikiInfoButton, Toggle } from '@/components/ui'
+import { TrafficMindProjectMatrix } from '@/components/traffic/TrafficMindProjectMatrix'
+import styles from '@/components/settings/Settings.module.css'
+import { buildTemplate, templateToJson, validateAndParse, isValidationError } from '@/lib/apiKeysTemplate'
+import type { ParsedImport } from '@/lib/apiKeysTemplate'
+import { ROTATION_TOOL_BY_FIELD, ROTATION_TOOL_NAMES } from '@/lib/rotationTools'
+import { copyText } from '@/lib/copyText'
+import { useApiUsageReport } from '@/components/settings/api-usage/useApiUsageReport'
+import { ApiUsageControls } from '@/components/settings/api-usage/ApiUsageControls'
+import { ApiUsageReportModal } from '@/components/settings/api-usage/ApiUsageReportModal'
+import { ApiUsageLlmChip } from '@/components/settings/api-usage/ApiUsageLlmChip'
+import { llmInventoryHint } from '@/lib/apiUsage/inventory'
+import { FeatureModelsSection } from '@/components/settings/FeatureModelsSection'
+import { AgentSkillsTab } from '@/components/settings/AgentSkillsTab'
+import { JevProviderSection } from '@/components/settings/JevProviderSection'
+
+/** A Secret Multiscanner credential column (TRUFFLEHOG_KEY_FIELDS). */
+type TrufflehogField = `trufflehog${string}`
+
+interface UserSettings {
+  // Secret Multiscanner credentials, masked like every key.
+  [key: TrufflehogField]: string
+  githubAccessToken: string
+  supplyChainGithubToken: string
+  githubEnterpriseHost: string
+  githubEnterpriseToken: string
+  tavilyApiKey: string
+  shodanApiKey: string
+  serpApiKey: string
+  nvdApiKey: string
+  vulnersApiKey: string
+  urlscanApiKey: string
+  censysApiToken: string
+  censysOrgId: string
+  fofaApiKey: string
+  otxApiKey: string
+  netlasApiKey: string
+  virusTotalApiKey: string
+  zoomEyeApiKey: string
+  criminalIpApiKey: string
+  securitytrailsApiKey: string
+  viewdnsApiKey: string
+  quakeApiKey: string
+  hunterApiKey: string
+  publicWwwApiKey: string
+  hunterHowApiKey: string
+  googleApiKey: string
+  googleApiCx: string
+  onypheApiKey: string
+  driftnetApiKey: string
+  wpscanApiToken: string
+  pdcpApiKey: string
+  tunnelsEnabled: boolean
+  ngrokAuthtoken: string
+  chiselServerUrl: string
+  chiselAuth: string
+  captureProxyEnabled: boolean
+  captureProxyPort: number
+  captureProxyScope: string
+  captureProxyStoreBodies: boolean
+  captureProxyMaxBodyKb: number
+  captureProxyRetentionDays: number
+  captureProxyRedactSecrets: boolean
+  captureProxyPassiveDetect: boolean
+  captureProxyStoreReqBodies: boolean
+  captureProxyStoreRespBodies: boolean
+  captureProxyMaxStoreMb: number
+  captureProxyBodyRules: Record<string, string>
+  captureEgressBlockEmptyHost: boolean
+  captureEgressBlockHardGuardrail: boolean
+  captureEgressFailClosed: boolean
+  captureEgressBlockUnresolvable: boolean
+  captureEgressBlockPrivate: boolean
+  captureEgressBlockLoopback: boolean
+  captureEgressBlockLinkLocal: boolean
+  captureEgressBlockCgnat: boolean
+  captureEgressBlockReserved: boolean
+  captureEgressBlockMulticast: boolean
+  captureEgressBlockUnspecified: boolean
+}
+
+/**
+ * The Secret Multiscanner credentials as the settings GET returns them (masked).
+ * Loaded into state so the drawer shows which ones are saved, and so a save
+ * sends the masked values back (the PUT keeps a masked value as stored).
+ */
+function trufflehogValues(data: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(TRUFFLEHOG_KEY_FIELDS.map(f => [f.name, typeof data[f.name] === 'string' ? data[f.name] as string : '']))
+}
+
+const EMPTY_SETTINGS: UserSettings = {
+  ...trufflehogValues({}),
+  githubAccessToken: '',
+  supplyChainGithubToken: '',
+  githubEnterpriseHost: '',
+  githubEnterpriseToken: '',
+  tavilyApiKey: '',
+  shodanApiKey: '',
+  serpApiKey: '',
+  nvdApiKey: '',
+  vulnersApiKey: '',
+  urlscanApiKey: '',
+  censysApiToken: '',
+  censysOrgId: '',
+  fofaApiKey: '',
+  otxApiKey: '',
+  netlasApiKey: '',
+  virusTotalApiKey: '',
+  zoomEyeApiKey: '',
+  criminalIpApiKey: '',
+  securitytrailsApiKey: '',
+  viewdnsApiKey: '',
+  quakeApiKey: '',
+  hunterApiKey: '',
+  publicWwwApiKey: '',
+  hunterHowApiKey: '',
+  googleApiKey: '',
+  googleApiCx: '',
+  onypheApiKey: '',
+  driftnetApiKey: '',
+  wpscanApiToken: '',
+  pdcpApiKey: '',
+  tunnelsEnabled: false,
+  ngrokAuthtoken: '',
+  chiselServerUrl: '',
+  chiselAuth: '',
+  captureProxyEnabled: true,
+  captureProxyPort: 8888,
+  captureProxyScope: 'both',
+  captureProxyStoreBodies: true,
+  captureProxyMaxBodyKb: 64,
+  captureProxyRetentionDays: 14,
+  captureProxyRedactSecrets: true,
+  captureProxyPassiveDetect: true,
+  captureProxyStoreReqBodies: true,
+  captureProxyStoreRespBodies: true,
+  captureProxyMaxStoreMb: 5,
+  captureProxyBodyRules: {},
+  captureEgressBlockEmptyHost: true,
+  captureEgressBlockHardGuardrail: true,
+  captureEgressFailClosed: true,
+  captureEgressBlockUnresolvable: true,
+  captureEgressBlockPrivate: true,
+  captureEgressBlockLoopback: true,
+  captureEgressBlockLinkLocal: true,
+  captureEgressBlockCgnat: true,
+  captureEgressBlockReserved: true,
+  captureEgressBlockMulticast: true,
+  captureEgressBlockUnspecified: true,
+}
+
+
+interface RotationInfo {
+  extraKeyCount: number
+  rotateEveryN: number
+}
+
+function getProviderIconComponent(providerType: string) {
+  return PROVIDER_TYPES.find(p => p.id === providerType)?.Icon ?? null
+}
+
+function getProviderLabel(providerType: string): string {
+  return PROVIDER_TYPES.find(p => p.id === providerType)?.name || providerType
+}
+
+export default function SettingsPage() {
+  const { userId } = useProject()
+  const { isAdmin } = useAuth()
+  const { alertError, alert: showAlert, confirm: showConfirm } = useAlertModal()
+  const toast = useToast()
+
+  // LLM Providers
+  const [providers, setProviders] = useState<ProviderData[]>([])
+  const [providersLoading, setProvidersLoading] = useState(true)
+  // A failed fetch must not read as "no providers" (or "no Jev token").
+  const [providersError, setProvidersError] = useState(false)
+  const [showProviderForm, setShowProviderForm] = useState(false)
+  const [editingProvider, setEditingProvider] = useState<ProviderData | null>(null)
+  const [jevFormOpen, setJevFormOpen] = useState(false)
+
+  // User Settings
+  const [settings, setSettings] = useState<UserSettings>(EMPTY_SETTINGS)
+  const [settingsLoading, setSettingsLoading] = useState(true)
+  const [settingsDirty, setSettingsDirty] = useState(false)
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [visibleFields, setVisibleFields] = useState<Record<string, boolean>>({})
+
+  // Key Rotation
+  const [rotationConfigs, setRotationConfigs] = useState<Record<string, RotationInfo>>({})
+  const [rotationModal, setRotationModal] = useState<string | null>(null) // toolName or null
+  const [rotationDraft, setRotationDraft] = useState({ extraKeys: '', rotateEveryN: 10 })
+  const [rotationDraftDirty, setRotationDraftDirty] = useState(false) // true = user typed new keys
+
+  // API Keys Import
+  const [pendingImport, setPendingImport] = useState<ParsedImport | null>(null)
+  const importFileRef = useRef<HTMLInputElement>(null)
+
+
+  // Chat Skills
+  const [chatSkills, setChatSkills] = useState<{ id: string; name: string; description?: string | null; category?: string | null; createdAt: string }[]>([])
+  const [chatSkillsLoading, setChatSkillsLoading] = useState(true)
+  const [chatSkillNameModal, setChatSkillNameModal] = useState(false)
+  const [pendingChatSkillContent, setPendingChatSkillContent] = useState('')
+  const [pendingChatSkillName, setPendingChatSkillName] = useState('')
+  const [pendingChatSkillDescription, setPendingChatSkillDescription] = useState('')
+  const [pendingChatSkillCategory, setPendingChatSkillCategory] = useState('general')
+  const [chatSkillUploading, setChatSkillUploading] = useState(false)
+  // Chat skill edit description modal
+  const [editChatDescModal, setEditChatDescModal] = useState(false)
+  const [editingChatSkillId, setEditingChatSkillId] = useState('')
+  const [editingChatSkillDescription, setEditingChatSkillDescription] = useState('')
+  const [editChatDescSaving, setEditChatDescSaving] = useState(false)
+  // Import from Community (Chat Skills)
+  const [importingChatSkills, setImportingChatSkills] = useState(false)
+  // Fetch chat skills
+  const fetchChatSkills = useCallback(async () => {
+    if (!userId) return
+    try {
+      const resp = await fetch(`/api/users/${userId}/chat-skills`)
+      if (resp.ok) setChatSkills(await resp.json())
+    } catch (err) {
+      console.error('Failed to fetch chat skills:', err)
+    } finally {
+      setChatSkillsLoading(false)
+    }
+  }, [userId])
+
+  // Upload chat skill from .md file
+  const handleChatSkillUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !userId) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      setPendingChatSkillContent(reader.result as string)
+      setPendingChatSkillName(file.name.replace(/\.md$/i, ''))
+      setPendingChatSkillCategory('general')
+      setChatSkillNameModal(true)
+    }
+    reader.readAsText(file)
+    e.target.value = ''
+  }, [userId])
+
+  // Confirm chat skill upload
+  const confirmChatSkillUpload = useCallback(async () => {
+    if (!userId || !pendingChatSkillName.trim()) return
+    setChatSkillUploading(true)
+    try {
+      const resp = await fetch(`/api/users/${userId}/chat-skills`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: pendingChatSkillName.trim(),
+          description: pendingChatSkillDescription.trim() || null,
+          category: pendingChatSkillCategory,
+          content: pendingChatSkillContent,
+        }),
+      })
+      if (resp.ok) {
+        fetchChatSkills()
+        setChatSkillNameModal(false)
+        setPendingChatSkillContent('')
+        setPendingChatSkillName('')
+        setPendingChatSkillDescription('')
+        setPendingChatSkillCategory('general')
+        toast.success('Chat skill uploaded')
+      } else {
+        const err = await resp.json()
+        alertError(err.error || 'Failed to upload chat skill')
+      }
+    } catch (err) {
+      console.error('Failed to upload chat skill:', err)
+      toast.error('Failed to upload chat skill')
+    } finally {
+      setChatSkillUploading(false)
+    }
+  }, [userId, pendingChatSkillName, pendingChatSkillDescription, pendingChatSkillCategory, pendingChatSkillContent, fetchChatSkills])
+
+  // Download chat skill as .md
+  const downloadChatSkill = useCallback(async (skillId: string, skillName: string) => {
+    if (!userId) return
+    try {
+      const resp = await fetch(`/api/users/${userId}/chat-skills/${skillId}`)
+      if (resp.ok) {
+        const skill = await resp.json()
+        const blob = new Blob([skill.content], { type: 'text/markdown' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `${skillName}.md`
+        a.click()
+        URL.revokeObjectURL(url)
+      }
+    } catch (err) {
+      console.error('Failed to download chat skill:', err)
+    }
+  }, [userId])
+
+  // Delete chat skill
+  const deleteChatSkill = useCallback(async (skillId: string) => {
+    if (!userId || !(await showConfirm('Delete this chat skill?'))) return
+    try {
+      await fetch(`/api/users/${userId}/chat-skills/${skillId}`, { method: 'DELETE' })
+      fetchChatSkills()
+      toast.success('Chat skill deleted')
+    } catch (err) {
+      console.error('Failed to delete chat skill:', err)
+      toast.error('Failed to delete chat skill')
+    }
+  }, [userId, fetchChatSkills])
+
+  // Open chat skill edit description modal
+  const openEditChatDescription = useCallback(async (skillId: string) => {
+    if (!userId) return
+    try {
+      const resp = await fetch(`/api/users/${userId}/chat-skills/${skillId}`)
+      if (resp.ok) {
+        const skill = await resp.json()
+        setEditingChatSkillId(skillId)
+        setEditingChatSkillDescription(skill.description || '')
+        setEditChatDescModal(true)
+      }
+    } catch (err) {
+      console.error('Failed to fetch chat skill:', err)
+    }
+  }, [userId])
+
+  // Save edited chat skill description
+  const saveEditChatDescription = useCallback(async () => {
+    if (!userId || !editingChatSkillId) return
+    setEditChatDescSaving(true)
+    try {
+      const resp = await fetch(`/api/users/${userId}/chat-skills/${editingChatSkillId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: editingChatSkillDescription.trim() || null }),
+      })
+      if (resp.ok) {
+        fetchChatSkills()
+        setEditChatDescModal(false)
+        setEditingChatSkillId('')
+        setEditingChatSkillDescription('')
+        toast.success('Chat skill description updated')
+      } else {
+        const err = await resp.json()
+        alertError(err.error || 'Failed to update description')
+      }
+    } catch (err) {
+      console.error('Failed to update chat skill description:', err)
+      toast.error('Failed to update description')
+    } finally {
+      setEditChatDescSaving(false)
+    }
+  }, [userId, editingChatSkillId, editingChatSkillDescription, fetchChatSkills])
+
+  // Import community chat skills
+  const importCommunityChatSkills = useCallback(async () => {
+    if (!userId) return
+    setImportingChatSkills(true)
+    try {
+      const resp = await fetch(`/api/users/${userId}/chat-skills/import-community`, { method: 'POST' })
+      const data = await resp.json()
+      if (resp.ok) {
+        fetchChatSkills()
+        showAlert(data.message || `Imported ${data.imported ?? 0} community chat skill(s).`)
+      } else {
+        alertError(data.error || 'Failed to import community chat skills')
+      }
+    } catch (err) {
+      console.error('Failed to import community chat skills:', err)
+    } finally {
+      setImportingChatSkills(false)
+    }
+  }, [userId, fetchChatSkills])
+
+  // Fetch providers
+  const fetchProviders = useCallback(async () => {
+    if (!userId) return
+    try {
+      const resp = await fetch(`/api/users/${userId}/llm-providers`)
+      if (resp.ok) {
+        setProviders(await resp.json())
+        setProvidersError(false)
+      } else {
+        setProvidersError(true)
+      }
+    } catch (err) {
+      console.error('Failed to fetch providers:', err)
+      setProvidersError(true)
+    } finally {
+      setProvidersLoading(false)
+    }
+  }, [userId])
+
+  const retryProviders = useCallback(() => {
+    setProvidersLoading(true)
+    fetchProviders()
+  }, [fetchProviders])
+
+  // Jev is not a chat provider: it has its own section and never counts as an LLM.
+  const chatProviders = useMemo(() => providers.filter(isChatProvider), [providers])
+  const jevProvider = useMemo(() => providers.find(p => p.providerType === 'jev') ?? null, [providers])
+  const providerFormOpen = showProviderForm || !!editingProvider || jevFormOpen
+
+  // Fetch user settings
+  const fetchSettings = useCallback(async () => {
+    if (!userId) return
+    try {
+      const resp = await fetch(`/api/users/${userId}/settings`)
+      if (resp.ok) {
+        const data = await resp.json()
+        setSettings({
+          ...trufflehogValues(data),
+          githubAccessToken: data.githubAccessToken || '',
+          supplyChainGithubToken: data.supplyChainGithubToken || '',
+          githubEnterpriseHost: data.githubEnterpriseHost || '',
+          githubEnterpriseToken: data.githubEnterpriseToken || '',
+          tavilyApiKey: data.tavilyApiKey || '',
+          shodanApiKey: data.shodanApiKey || '',
+          serpApiKey: data.serpApiKey || '',
+          nvdApiKey: data.nvdApiKey || '',
+          vulnersApiKey: data.vulnersApiKey || '',
+          urlscanApiKey: data.urlscanApiKey || '',
+          censysApiToken: data.censysApiToken || '',
+          censysOrgId: data.censysOrgId || '',
+          fofaApiKey: data.fofaApiKey || '',
+          otxApiKey: data.otxApiKey || '',
+          netlasApiKey: data.netlasApiKey || '',
+          virusTotalApiKey: data.virusTotalApiKey || '',
+          zoomEyeApiKey: data.zoomEyeApiKey || '',
+          criminalIpApiKey: data.criminalIpApiKey || '',
+          securitytrailsApiKey: data.securitytrailsApiKey || '',
+          viewdnsApiKey: data.viewdnsApiKey || '',
+          quakeApiKey: data.quakeApiKey || '',
+          hunterApiKey: data.hunterApiKey || '',
+          publicWwwApiKey: data.publicWwwApiKey || '',
+          hunterHowApiKey: data.hunterHowApiKey || '',
+          googleApiKey: data.googleApiKey || '',
+          googleApiCx: data.googleApiCx || '',
+          onypheApiKey: data.onypheApiKey || '',
+          driftnetApiKey: data.driftnetApiKey || '',
+          wpscanApiToken: data.wpscanApiToken || '',
+          pdcpApiKey: data.pdcpApiKey || '',
+          tunnelsEnabled: !!data.tunnelsEnabled,
+          ngrokAuthtoken: data.ngrokAuthtoken || '',
+          chiselServerUrl: data.chiselServerUrl || '',
+          chiselAuth: data.chiselAuth || '',
+          captureProxyEnabled: data.captureProxyEnabled ?? true,
+          captureProxyPort: data.captureProxyPort ?? 8888,
+          captureProxyScope: data.captureProxyScope || 'both',
+          captureProxyStoreBodies: data.captureProxyStoreBodies ?? true,
+          captureProxyMaxBodyKb: data.captureProxyMaxBodyKb ?? 64,
+          captureProxyRetentionDays: data.captureProxyRetentionDays ?? 14,
+          captureProxyRedactSecrets: data.captureProxyRedactSecrets ?? true,
+          captureProxyPassiveDetect: data.captureProxyPassiveDetect ?? true,
+          captureProxyStoreReqBodies: data.captureProxyStoreReqBodies ?? true,
+          captureProxyStoreRespBodies: data.captureProxyStoreRespBodies ?? true,
+          captureProxyMaxStoreMb: data.captureProxyMaxStoreMb ?? 5,
+          captureProxyBodyRules: data.captureProxyBodyRules ?? {},
+          captureEgressBlockEmptyHost: data.captureEgressBlockEmptyHost ?? true,
+          captureEgressBlockHardGuardrail: data.captureEgressBlockHardGuardrail ?? true,
+          captureEgressFailClosed: data.captureEgressFailClosed ?? true,
+          captureEgressBlockUnresolvable: data.captureEgressBlockUnresolvable ?? true,
+          captureEgressBlockPrivate: data.captureEgressBlockPrivate ?? true,
+          captureEgressBlockLoopback: data.captureEgressBlockLoopback ?? true,
+          captureEgressBlockLinkLocal: data.captureEgressBlockLinkLocal ?? true,
+          captureEgressBlockCgnat: data.captureEgressBlockCgnat ?? true,
+          captureEgressBlockReserved: data.captureEgressBlockReserved ?? true,
+          captureEgressBlockMulticast: data.captureEgressBlockMulticast ?? true,
+          captureEgressBlockUnspecified: data.captureEgressBlockUnspecified ?? true,
+        })
+        if (data.rotationConfigs) {
+          setRotationConfigs(data.rotationConfigs)
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch settings:', err)
+    } finally {
+      setSettingsLoading(false)
+    }
+  }, [userId])
+
+  useEffect(() => {
+    fetchProviders()
+    fetchSettings()
+    fetchChatSkills()
+  }, [fetchProviders, fetchSettings, fetchChatSkills])
+
+  // Delete provider
+  const deleteProvider = useCallback(async (
+    providerId: string,
+    message = 'Delete this provider? Models from it will no longer be available.',
+  ) => {
+    if (!userId || !(await showConfirm(message))) return
+    try {
+      await fetch(`/api/users/${userId}/llm-providers/${providerId}`, { method: 'DELETE' })
+      fetchProviders()
+      toast.success('Provider deleted')
+    } catch (err) {
+      console.error('Failed to delete provider:', err)
+      toast.error('Failed to delete provider')
+    }
+  }, [userId, fetchProviders])
+
+  // Save user settings. Resolves true once the PUT succeeded, so a caller (the
+  // API usage check's "Save and check") only proceeds on saved keys.
+  const saveSettings = useCallback(async (): Promise<boolean> => {
+    if (!userId) return false
+    setSettingsSaving(true)
+    try {
+      // Build rotation configs payload from pending state
+      const rotPayload: Record<string, { extraKeys: string; rotateEveryN: number }> = {}
+      for (const toolName of ROTATION_TOOL_NAMES) {
+        const info = rotationConfigs[toolName]
+        if (info && (info as RotationInfo & { _extraKeys?: string })._extraKeys !== undefined) {
+          // New keys were set via the modal - send them
+          rotPayload[toolName] = {
+            extraKeys: (info as RotationInfo & { _extraKeys?: string })._extraKeys!,
+            rotateEveryN: info.rotateEveryN,
+          }
+        } else if (info && info.extraKeyCount > 0) {
+          // Existing keys not modified - send masked marker to preserve
+          rotPayload[toolName] = {
+            extraKeys: '••••',
+            rotateEveryN: info.rotateEveryN,
+          }
+        }
+      }
+
+      // TrafficMind capture settings are edited from the /traffic page modal, not
+      // here - strip them so a stale save on this page can't clobber those edits.
+      // featureModels likewise: the Models by feature tiles save their own keys,
+      // and a stale copy riding this save would put back models changed since.
+      const settingsPayload = Object.fromEntries(
+        Object.entries(settings).filter(([k]) =>
+          !k.startsWith('captureProxy') && !k.startsWith('captureEgress') && k !== 'featureModels')
+      )
+      const resp = await fetch(`/api/users/${userId}/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...settingsPayload, rotationConfigs: rotPayload }),
+      })
+      if (resp.ok) {
+        const data = await resp.json()
+        setSettings({
+          ...trufflehogValues(data),
+          githubAccessToken: data.githubAccessToken || '',
+          supplyChainGithubToken: data.supplyChainGithubToken || '',
+          githubEnterpriseHost: data.githubEnterpriseHost || '',
+          githubEnterpriseToken: data.githubEnterpriseToken || '',
+          tavilyApiKey: data.tavilyApiKey || '',
+          shodanApiKey: data.shodanApiKey || '',
+          serpApiKey: data.serpApiKey || '',
+          nvdApiKey: data.nvdApiKey || '',
+          vulnersApiKey: data.vulnersApiKey || '',
+          urlscanApiKey: data.urlscanApiKey || '',
+          censysApiToken: data.censysApiToken || '',
+          censysOrgId: data.censysOrgId || '',
+          fofaApiKey: data.fofaApiKey || '',
+          otxApiKey: data.otxApiKey || '',
+          netlasApiKey: data.netlasApiKey || '',
+          virusTotalApiKey: data.virusTotalApiKey || '',
+          zoomEyeApiKey: data.zoomEyeApiKey || '',
+          criminalIpApiKey: data.criminalIpApiKey || '',
+          securitytrailsApiKey: data.securitytrailsApiKey || '',
+          viewdnsApiKey: data.viewdnsApiKey || '',
+          quakeApiKey: data.quakeApiKey || '',
+          hunterApiKey: data.hunterApiKey || '',
+          publicWwwApiKey: data.publicWwwApiKey || '',
+          hunterHowApiKey: data.hunterHowApiKey || '',
+          googleApiKey: data.googleApiKey || '',
+          googleApiCx: data.googleApiCx || '',
+          onypheApiKey: data.onypheApiKey || '',
+          driftnetApiKey: data.driftnetApiKey || '',
+          wpscanApiToken: data.wpscanApiToken || '',
+          pdcpApiKey: data.pdcpApiKey || '',
+          tunnelsEnabled: !!data.tunnelsEnabled,
+          ngrokAuthtoken: data.ngrokAuthtoken || '',
+          chiselServerUrl: data.chiselServerUrl || '',
+          chiselAuth: data.chiselAuth || '',
+          captureProxyEnabled: data.captureProxyEnabled ?? true,
+          captureProxyPort: data.captureProxyPort ?? 8888,
+          captureProxyScope: data.captureProxyScope || 'both',
+          captureProxyStoreBodies: data.captureProxyStoreBodies ?? true,
+          captureProxyMaxBodyKb: data.captureProxyMaxBodyKb ?? 64,
+          captureProxyRetentionDays: data.captureProxyRetentionDays ?? 14,
+          captureProxyRedactSecrets: data.captureProxyRedactSecrets ?? true,
+          captureProxyPassiveDetect: data.captureProxyPassiveDetect ?? true,
+          captureProxyStoreReqBodies: data.captureProxyStoreReqBodies ?? true,
+          captureProxyStoreRespBodies: data.captureProxyStoreRespBodies ?? true,
+          captureProxyMaxStoreMb: data.captureProxyMaxStoreMb ?? 5,
+          captureProxyBodyRules: data.captureProxyBodyRules ?? {},
+          captureEgressBlockEmptyHost: data.captureEgressBlockEmptyHost ?? true,
+          captureEgressBlockHardGuardrail: data.captureEgressBlockHardGuardrail ?? true,
+          captureEgressFailClosed: data.captureEgressFailClosed ?? true,
+          captureEgressBlockUnresolvable: data.captureEgressBlockUnresolvable ?? true,
+          captureEgressBlockPrivate: data.captureEgressBlockPrivate ?? true,
+          captureEgressBlockLoopback: data.captureEgressBlockLoopback ?? true,
+          captureEgressBlockLinkLocal: data.captureEgressBlockLinkLocal ?? true,
+          captureEgressBlockCgnat: data.captureEgressBlockCgnat ?? true,
+          captureEgressBlockReserved: data.captureEgressBlockReserved ?? true,
+          captureEgressBlockMulticast: data.captureEgressBlockMulticast ?? true,
+          captureEgressBlockUnspecified: data.captureEgressBlockUnspecified ?? true,
+        })
+        if (data.rotationConfigs) {
+          setRotationConfigs(data.rotationConfigs)
+        }
+        setSettingsDirty(false)
+        toast.success('Settings saved')
+        return true
+      }
+      const err = await resp.json().catch(() => ({}))
+      toast.error(err.error || 'Failed to save settings')
+      return false
+    } catch (err) {
+      console.error('Failed to save settings:', err)
+      toast.error('Failed to save settings')
+      return false
+    } finally {
+      setSettingsSaving(false)
+    }
+  }, [userId, settings, rotationConfigs])
+
+  const updateSetting = useCallback(<K extends keyof UserSettings>(field: K, value: UserSettings[K]) => {
+    setSettings(prev => ({ ...prev, [field]: value }))
+    setSettingsDirty(true)
+  }, [])
+
+  const toggleFieldVisibility = useCallback((field: string) => {
+    setVisibleFields(prev => ({ ...prev, [field]: !prev[field] }))
+  }, [])
+
+  const openRotationModal = useCallback((settingsField: string) => {
+    const toolName = ROTATION_TOOL_BY_FIELD[settingsField]
+    if (!toolName) return
+    const existing = rotationConfigs[toolName]
+    setRotationModal(toolName)
+    setRotationDraft({
+      extraKeys: '',
+      rotateEveryN: existing?.rotateEveryN ?? 10,
+    })
+    setRotationDraftDirty(false)
+  }, [rotationConfigs])
+
+  const closeRotationModal = useCallback(() => {
+    setRotationModal(null)
+    setRotationDraft({ extraKeys: '', rotateEveryN: 10 })
+    setRotationDraftDirty(false)
+  }, [])
+
+  const saveRotationDraft = useCallback(() => {
+    if (!rotationModal) return
+    const existing = rotationConfigs[rotationModal]
+    if (rotationDraftDirty) {
+      // User typed new keys - send them (may be empty to clear)
+      const keys = rotationDraft.extraKeys.split('\n').filter(k => k.trim())
+      setRotationConfigs(prev => ({
+        ...prev,
+        [rotationModal]: {
+          extraKeyCount: keys.length,
+          rotateEveryN: Math.max(1, rotationDraft.rotateEveryN),
+          _extraKeys: rotationDraft.extraKeys,
+        } as RotationInfo & { _extraKeys: string },
+      }))
+    } else {
+      // Only rotateEveryN changed - preserve existing keys
+      setRotationConfigs(prev => ({
+        ...prev,
+        [rotationModal]: {
+          extraKeyCount: existing?.extraKeyCount ?? 0,
+          rotateEveryN: Math.max(1, rotationDraft.rotateEveryN),
+        },
+      }))
+    }
+    setSettingsDirty(true)
+    closeRotationModal()
+  }, [rotationModal, rotationDraft, rotationDraftDirty, rotationConfigs, closeRotationModal])
+
+  const clearRotationConfig = useCallback(() => {
+    if (!rotationModal) return
+    setRotationConfigs(prev => ({
+      ...prev,
+      [rotationModal]: {
+        extraKeyCount: 0,
+        rotateEveryN: 10,
+        _extraKeys: '',
+      } as RotationInfo & { _extraKeys: string },
+    }))
+    setSettingsDirty(true)
+    closeRotationModal()
+  }, [rotationModal, closeRotationModal])
+
+  // --- API Keys Import / Export ---------------------------------------------------
+
+  const downloadKeysTemplate = useCallback(() => {
+    const keyFields: Record<string, string> = {}
+    const tunnelFields: Record<string, string> = {}
+    for (const [k, v] of Object.entries(settings)) {
+      if (['ngrokAuthtoken', 'chiselServerUrl', 'chiselAuth'].includes(k)) {
+        tunnelFields[k] = v
+      } else {
+        keyFields[k] = v
+      }
+    }
+    const template = buildTemplate(keyFields, tunnelFields)
+    const json = templateToJson(template)
+    const blob = new Blob([json], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'CART-api-keys-template.json'
+    a.click()
+    URL.revokeObjectURL(url)
+    toast.success('Template downloaded')
+  }, [settings])
+
+  const handleKeysFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (importFileRef.current) importFileRef.current.value = ''
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      const raw = reader.result as string
+      const result = validateAndParse(raw, file.size)
+      if (isValidationError(result)) {
+        toast.error(result.message)
+        return
+      }
+      if (result.keyCount === 0 && result.rotationCount === 0 && result.tunnelingCount === 0) {
+        toast.error('No keys to import - all values are empty or masked.')
+        return
+      }
+      setPendingImport(result)
+    }
+    reader.onerror = () => toast.error('Failed to read file.')
+    reader.readAsText(file)
+  }, [])
+
+  const confirmImport = useCallback(() => {
+    if (!pendingImport) return
+    setSettings(prev => ({ ...prev, ...pendingImport.keys, ...pendingImport.tunneling }))
+    for (const [tool, cfg] of Object.entries(pendingImport.rotation)) {
+      setRotationConfigs(prev => ({
+        ...prev,
+        [tool]: {
+          extraKeyCount: cfg.extraKeys.length,
+          rotateEveryN: cfg.rotateEveryN,
+          _extraKeys: cfg.extraKeys.join('\n'),
+        } as RotationInfo & { _extraKeys: string },
+      }))
+    }
+    setSettingsDirty(true)
+    setPendingImport(null)
+    toast.success('Keys imported - click "Save Settings" to persist.')
+  }, [pendingImport])
+
+  const searchParams = useSearchParams()
+  const validTabs = ['providers', 'skills', 'chat-skills', 'tradecraft', 'keys', 'mcp', 'mcp-tokens', 'system']
+  const initialTab = searchParams.get('tab') || 'providers'
+  const [activeTab, setActiveTab] = useState(validTabs.includes(initialTab) ? initialTab : 'providers')
+
+  // Unsaved-changes guard. Each tab hosts a distinct form: the API Keys tab uses
+  // the page-level `settingsDirty`; the providers/mcp/tradecraft tabs have child
+  // forms with local state that unmounts on tab switch, so they report dirtiness
+  // up via `childDirty`. Switching tabs, sidebar nav, and browser refresh all
+  // prompt when the tab being left has unsaved edits.
+  const [childDirty, setChildDirty] = useState(false)
+  const pageDirty = settingsDirty || childDirty
+  const { confirmDiscard } = useUnsavedChangesGuard(pageDirty)
+
+  const switchTab = useCallback(async (next: string) => {
+    if (next === activeTab) return
+    const leavingDirty = (activeTab === 'keys' && settingsDirty) || childDirty
+    if (leavingDirty && !(await confirmDiscard())) return
+    setChildDirty(false)
+    setActiveTab(next)
+  }, [activeTab, settingsDirty, childDirty, confirmDiscard])
+
+  // API usage report: one report for every saved key, reachable from the API
+  // Keys tab and the LLM Providers tab.
+  const extraKeyCounts = useMemo(
+    () => Object.fromEntries(Object.entries(rotationConfigs).map(([tool, r]) => [tool, r.extraKeyCount])),
+    [rotationConfigs],
+  )
+  const llmUsageRows = useMemo(
+    () => providers.filter(p => p.id).map(p => ({
+      id: p.id!, providerType: p.providerType, name: p.name, apiKey: p.apiKey, baseUrl: p.baseUrl,
+      awsRegion: p.awsRegion, awsAccessKeyId: p.awsAccessKeyId, awsBearerToken: p.awsBearerToken,
+    })),
+    [providers],
+  )
+  const llmUsageHints = useMemo(
+    () => Object.fromEntries(llmUsageRows.map(r => [r.id, llmInventoryHint(r)])),
+    [llmUsageRows],
+  )
+  const apiUsage = useApiUsageReport({
+    userId,
+    active: activeTab === 'keys' || activeTab === 'providers',
+    settingsDirty,
+    saveSettings,
+    values: settings as unknown as Record<string, unknown>,
+    extraKeyCounts,
+    llmRows: llmUsageRows,
+    llmLabel: getProviderLabel,
+  })
+
+  // Tradecraft Resources state
+  type TcResource = import('@/components/settings/TradecraftResourceForm').TradecraftResource & {
+    crawlStoppedBecause?: string
+    crawlStats?: { pages_fetched?: number; llm_calls?: number; elapsed_sec?: number }
+    sitemap?: { nav?: unknown[]; tree?: unknown[]; pages?: unknown[]; links?: unknown[] }
+  }
+  const [tcResources, setTcResources] = useState<TcResource[]>([])
+  const [tcLoading, setTcLoading] = useState(false)
+  const [tcShowForm, setTcShowForm] = useState(false)
+  const [tcEditing, setTcEditing] = useState<TcResource | null>(null)
+  const [tcRefreshingId, setTcRefreshingId] = useState<string | null>(null)
+  const tcPollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const fetchTcResources = useCallback(async () => {
+    if (!userId) return
+    setTcLoading(true)
+    try {
+      const r = await fetch(`/api/users/${userId}/tradecraft-resources`)
+      if (r.ok) setTcResources(await r.json())
+    } catch (e) { console.error('fetchTcResources', e) }
+    finally { setTcLoading(false) }
+  }, [userId])
+
+  useEffect(() => {
+    if (activeTab === 'tradecraft' && userId) {
+      fetchTcResources()
+    }
+  }, [activeTab, userId, fetchTcResources])
+
+  // Light polling while a resource has not yet been verified (lastVerifiedAt null)
+  useEffect(() => {
+    if (activeTab !== 'tradecraft' || !userId) {
+      if (tcPollingRef.current) { clearInterval(tcPollingRef.current); tcPollingRef.current = null }
+      return
+    }
+    const anyPending = tcResources.some(r => !r.lastVerifiedAt)
+    if (anyPending && !tcPollingRef.current) {
+      tcPollingRef.current = setInterval(fetchTcResources, 5000)
+    } else if (!anyPending && tcPollingRef.current) {
+      clearInterval(tcPollingRef.current); tcPollingRef.current = null
+    }
+    return () => {
+      if (tcPollingRef.current) { clearInterval(tcPollingRef.current); tcPollingRef.current = null }
+    }
+  }, [activeTab, userId, tcResources, fetchTcResources])
+
+  const tcHandleSave = useCallback(() => {
+    setTcShowForm(false); setTcEditing(null); fetchTcResources(); toast.success('Saved')
+  }, [fetchTcResources, toast])
+
+  const tcHandleCancel = useCallback(() => { setTcShowForm(false); setTcEditing(null) }, [])
+
+  const tcHandleDelete = useCallback(async (r: TcResource) => {
+    if (!userId || !r.id) return
+    const ok = await showConfirm(
+      `Delete "${r.name}"? This removes the catalog entry and disk cache.`,
+      'Delete tradecraft resource',
+    )
+    if (!ok) return
+    try {
+      const resp = await fetch(`/api/users/${userId}/tradecraft-resources/${r.id}`, { method: 'DELETE' })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      toast.success('Deleted')
+      fetchTcResources()
+    } catch (e) { toast.error(`Delete failed: ${e instanceof Error ? e.message : String(e)}`) }
+  }, [userId, showConfirm, toast, fetchTcResources])
+
+  const tcHandleRefresh = useCallback(async (r: TcResource) => {
+    if (!userId || !r.id) return
+    setTcRefreshingId(r.id)
+    try {
+      const resp = await fetch(`/api/users/${userId}/tradecraft-resources/${r.id}/refresh`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+      })
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}))
+        throw new Error(data.error || `HTTP ${resp.status}`)
+      }
+      toast.success('Refreshed')
+      fetchTcResources()
+    } catch (e) { toast.error(`Refresh failed: ${e instanceof Error ? e.message : String(e)}`) }
+    finally { setTcRefreshingId(null) }
+  }, [userId, toast, fetchTcResources])
+
+  const tcHandleToggleEnabled = useCallback(async (r: TcResource, next: boolean) => {
+    if (!userId || !r.id) return
+    // Optimistic update
+    setTcResources(prev => prev.map(x => x.id === r.id ? { ...x, enabled: next } : x))
+    try {
+      const resp = await fetch(`/api/users/${userId}/tradecraft-resources/${r.id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: next }),
+      })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    } catch (e) {
+      toast.error(`Toggle failed: ${e instanceof Error ? e.message : String(e)}`)
+      fetchTcResources()
+    }
+  }, [userId, toast, fetchTcResources])
+
+  if (!userId) {
+    return (
+      <div className={styles.page}>
+        <h1 className={styles.pageTitle} style={{ display: 'inline-flex', alignItems: 'center', gap: '12px' }}>
+          <span>Global Settings <span style={{ fontSize: '0.55em', fontWeight: 400, opacity: 0.5 }}>(User-Scoped)</span></span>
+          <WikiInfoButton target="settings" title="Open Global Settings wiki page" />
+        </h1>
+        <div className={styles.emptyState}>Select a user to configure settings.</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className={styles.page}>
+      <h1 className={styles.pageTitle}>Global Settings <span style={{ fontSize: '0.55em', fontWeight: 400, opacity: 0.5 }}>(User-Scoped)</span></h1>
+      <p style={{ color: 'var(--text-secondary)', fontSize: '13px', margin: '0 0 var(--space-4)' }}>
+        Personal configuration for the current user. These settings apply across all projects.
+      </p>
+
+      <div className={styles.tabBar}>
+        <button className={`${styles.tab} ${activeTab === 'providers' ? styles.tabActive : ''}`} onClick={() => switchTab('providers')}>
+          LLM Providers
+        </button>
+        <button className={`${styles.tab} ${activeTab === 'skills' ? styles.tabActive : ''}`} onClick={() => switchTab('skills')}>
+          <Swords size={14} /> Agent Skills
+        </button>
+        <button className={`${styles.tab} ${activeTab === 'chat-skills' ? styles.tabActive : ''}`} onClick={() => switchTab('chat-skills')}>
+          <BookOpen size={14} /> Chat Skills
+        </button>
+        <button className={`${styles.tab} ${activeTab === 'tradecraft' ? styles.tabActive : ''}`} onClick={() => switchTab('tradecraft')}>
+          <BookOpen size={14} /> Tradecraft
+        </button>
+        <button className={`${styles.tab} ${activeTab === 'keys' ? styles.tabActive : ''}`} onClick={() => switchTab('keys')}>
+          API Keys & Tunneling
+        </button>
+        <button className={`${styles.tab} ${activeTab === 'mcp' ? styles.tabActive : ''}`} onClick={() => switchTab('mcp')}>
+          <Server size={14} /> MCP Tool Plugins
+        </button>
+        <button className={`${styles.tab} ${activeTab === 'mcp-tokens' ? styles.tabActive : ''}`} onClick={() => switchTab('mcp-tokens')}>
+          <KeyRound size={14} /> MCP Server
+        </button>
+        <button className={`${styles.tab} ${activeTab === 'system' ? styles.tabActive : ''}`} onClick={() => switchTab('system')}>
+          <Info size={14} /> System
+        </button>
+      </div>
+
+      {/* Tab: LLM Providers */}
+      {activeTab === 'providers' && <div className={styles.section}>
+        <div className={styles.sectionHeader}>
+          <h2 className={styles.sectionTitle} style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+            <span>LLM Providers</span>
+            <WikiInfoButton target="https://github.com/HackWidMaddy/CART/wiki/AI-Model-Providers" title="Open AI Model Providers wiki page" />
+          </h2>
+          <div className={styles.sectionHeaderActions}>
+            <ApiUsageControls controller={apiUsage} buttonClassName={styles.sectionHeaderBtn} />
+            {!providerFormOpen && (
+              <button className="primaryButton" onClick={() => setShowProviderForm(true)}>
+                <Plus size={14} /> Add Provider
+              </button>
+            )}
+          </div>
+        </div>
+        <p className={styles.sectionHint}>
+          Models from all providers appear in every project&apos;s LLM selector. Key-based providers auto-discover available models.
+        </p>
+
+        {/* Provider form */}
+        {(showProviderForm || editingProvider) && (
+          <LlmProviderForm
+            userId={userId}
+            provider={editingProvider}
+            existingProviderTypes={providers.map(p => p.providerType)}
+            onDirtyChange={setChildDirty}
+            onSave={() => {
+              setShowProviderForm(false)
+              setEditingProvider(null)
+              fetchProviders()
+            }}
+            onCancel={() => {
+              setShowProviderForm(false)
+              setEditingProvider(null)
+            }}
+          />
+        )}
+
+        {/* Provider list */}
+        {!providerFormOpen && (
+          providersLoading ? (
+            <div className={styles.emptyState}><Loader2 size={16} className={styles.spin} /> Loading...</div>
+          ) : providersError ? (
+            <div className={styles.emptyState} role="alert">
+              Couldn&apos;t load your providers.{' '}
+              <button type="button" className="textButton" onClick={retryProviders}>Retry</button>
+            </div>
+          ) : chatProviders.length === 0 ? (
+            <div className={styles.emptyState}>No providers configured. Add one to get started.</div>
+          ) : (
+            <div className={styles.providerList}>
+              {chatProviders.map((p: ProviderData) => {
+                const Icon = getProviderIconComponent(p.providerType)
+                return (
+                <div key={p.id} className={styles.providerCard}>
+                  <span className={styles.providerIcon} aria-label={getProviderLabel(p.providerType)}>
+                    {Icon ? <Icon size={28} /> : null}
+                  </span>
+                  <div className={styles.providerInfo}>
+                    <div className={styles.providerName}>{p.name}</div>
+                    <div className={styles.providerMeta}>
+                      {getProviderLabel(p.providerType)}
+                      {p.providerType === 'openai_compatible' && p.modelIdentifier && ` - ${p.modelIdentifier}`}
+                    </div>
+                    {p.id && <ApiUsageLlmChip report={apiUsage.meta?.report} providerId={p.id} hint={llmUsageHints[p.id]} />}
+                  </div>
+                  <div className={styles.providerActions}>
+                    <button className="iconButton" title="Edit" onClick={() => setEditingProvider(p)}>
+                      <Pencil size={14} />
+                    </button>
+                    <button className="iconButton" title="Delete" onClick={() => deleteProvider(p.id!)}>
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+                )
+              })}
+            </div>
+          )
+        )}
+
+        {!showProviderForm && !editingProvider && (
+          <JevProviderSection
+            userId={userId}
+            provider={jevProvider}
+            loading={providersLoading}
+            error={providersError}
+            onRetry={retryProviders}
+            formOpen={jevFormOpen}
+            onOpenForm={() => setJevFormOpen(true)}
+            onFormDone={saved => {
+              setJevFormOpen(false)
+              if (saved) fetchProviders()
+            }}
+            onDelete={id => deleteProvider(
+              id, 'Delete your Jev token? Recon hooks set to the Jev engine will use their static fallback.')}
+            onDirtyChange={setChildDirty}
+            usageChip={jevProvider?.id
+              ? <ApiUsageLlmChip report={apiUsage.meta?.report} providerId={jevProvider.id} hint={llmUsageHints[jevProvider.id]} />
+              : null}
+          />
+        )}
+
+        {!providerFormOpen && (
+          <FeatureModelsSection
+            userId={userId}
+            providersCount={chatProviders.length}
+            providersLoading={providersLoading}
+          />
+        )}
+      </div>}
+
+      {/* Tab: Agent Skills */}
+      {activeTab === 'skills' && <AgentSkillsTab userId={userId} />}
+
+      {/* Tab: Chat Skills */}
+      {activeTab === 'chat-skills' && <div className={styles.section}>
+        <div className={styles.sectionHeader}>
+          <h2 className={styles.sectionTitle} style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+            <BookOpen size={16} /> Chat Skills
+            <WikiInfoButton target="https://github.com/HackWidMaddy/CART/wiki/Chat-Skills" title="Open Chat Skills wiki page" />
+          </h2>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <button
+              className="secondaryButton"
+              onClick={importCommunityChatSkills}
+              disabled={importingChatSkills}
+            >
+              {importingChatSkills ? <Loader2 size={14} className={styles.spin} /> : <Download size={14} />}
+              Import from Community
+            </button>
+            <label className="primaryButton" style={{ cursor: 'pointer' }}>
+              <Upload size={14} /> Upload Skill (.md)
+              <input
+                type="file"
+                accept=".md"
+                style={{ display: 'none' }}
+                onChange={handleChatSkillUpload}
+              />
+            </label>
+          </div>
+        </div>
+        <p className={styles.sectionHint}>
+          Upload and manage on-demand reference skills for the AI agent chat. Unlike Agent Skills (which drive attack classification and phase-aware workflows), Chat Skills are tactical reference docs that you inject into the agent&apos;s context on the fly using <code>/skill &lt;name&gt;</code> in the chat.
+        </p>
+
+        {chatSkillsLoading ? (
+          <div className={styles.emptyState}><Loader2 size={16} className={styles.spin} /> Loading...</div>
+        ) : chatSkills.length === 0 ? (
+          <div className={styles.emptyState}>No Chat Skills yet. Click Import from Community to add ready-to-use reference skills, or upload your own .md files.</div>
+        ) : (
+          <div className={styles.providerList}>
+            {chatSkills.map(skill => (
+              <div key={skill.id} className={styles.providerCard}>
+                <span className={styles.providerIcon}><BookOpen size={16} /></span>
+                <div className={styles.providerInfo}>
+                  <div className={styles.providerName}>
+                    {skill.name}
+                    {skill.category && (
+                      <span style={{
+                        marginLeft: '8px',
+                        fontSize: '10px',
+                        fontWeight: 500,
+                        padding: '2px 6px',
+                        borderRadius: '4px',
+                        background: 'var(--bg-tertiary)',
+                        color: 'var(--text-secondary)',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.03em',
+                      }}>
+                        {skill.category}
+                      </span>
+                    )}
+                  </div>
+                  <div className={styles.providerMeta}>
+                    {skill.description || <span style={{ opacity: 0.5, fontStyle: 'italic' }}>No description</span>}
+                  </div>
+                  <div className={styles.providerMeta}>
+                    Uploaded {new Date(skill.createdAt).toLocaleDateString()}
+                  </div>
+                </div>
+                <div className={styles.providerActions}>
+                  <button className="iconButton" title="Edit description" onClick={() => openEditChatDescription(skill.id)}>
+                    <Pencil size={14} />
+                  </button>
+                  <button className="iconButton" title="Download" onClick={() => downloadChatSkill(skill.id, skill.name)}>
+                    <Download size={14} />
+                  </button>
+                  <button className="iconButton" title="Delete" onClick={() => deleteChatSkill(skill.id)}>
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>}
+
+      {/* Tab: Tradecraft Resources */}
+      {activeTab === 'tradecraft' && <div className={styles.section}>
+        <div className={styles.sectionHeader}>
+          <h2 className={styles.sectionTitle}>
+            Tradecraft Resources
+            <WikiInfoButton target="https://github.com/HackWidMaddy/CART/wiki/Tradecraft-Lookup" title="Open Tradecraft Lookup wiki page" />
+          </h2>
+          {!tcShowForm && !tcEditing && (
+            <button className="primaryButton" onClick={() => setTcShowForm(true)}>
+              <Plus size={14} /> Add Resource
+            </button>
+          )}
+        </div>
+        <p className={styles.sectionHint}>
+          Curated knowledge sites the agent consults during exploitation
+          (HackTricks, PayloadsAllTheThings, CVE PoC repos, ...). On add, the
+          agent fetches the homepage, builds a sitemap, and writes a short
+          summary that becomes the tool&apos;s catalog entry. The agent only sees
+          enabled resources.
+        </p>
+        {(tcShowForm || tcEditing) && (
+          <TradecraftResourceForm
+            userId={userId!}
+            resource={tcEditing}
+            onDirtyChange={setChildDirty}
+            onSave={tcHandleSave}
+            onCancel={tcHandleCancel}
+          />
+        )}
+        <TradecraftResourceList
+          resources={tcResources}
+          loading={tcLoading}
+          refreshingId={tcRefreshingId}
+          onEdit={(r) => setTcEditing(r)}
+          onDelete={tcHandleDelete}
+          onRefresh={tcHandleRefresh}
+          onToggleEnabled={tcHandleToggleEnabled}
+        />
+      </div>}
+
+      {/* Tab: API Keys & Tunneling */}
+      {activeTab === 'keys' && <><div className={styles.section}>
+        <div className={styles.sectionHeader}>
+          <h2 className={styles.sectionTitle} style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+            <span>API Keys</span>
+            <WikiInfoButton target="settings" title="Open Global Settings wiki page" />
+          </h2>
+          <div className={styles.sectionHeaderActions}>
+            <ApiUsageControls controller={apiUsage} buttonClassName={styles.sectionHeaderBtn} />
+            <button className={styles.sectionHeaderBtn} onClick={downloadKeysTemplate} title="Download a JSON template to fill in your API keys offline">
+              <Download size={13} /> Download Template
+            </button>
+            <button className={styles.sectionHeaderBtn} onClick={() => importFileRef.current?.click()} title="Import API keys from a JSON template file">
+              <Upload size={13} /> Import Keys
+            </button>
+            <input
+              ref={importFileRef}
+              type="file"
+              accept=".json"
+              style={{ display: 'none' }}
+              onChange={handleKeysFileSelect}
+            />
+          </div>
+        </div>
+        {settingsLoading ? (
+          <div className={styles.emptyState}><Loader2 size={16} className={styles.spin} /> Loading...</div>
+        ) : (
+          <div className={styles.settingsGrid}>
+            {/* Each drawer carries its own anchor and title, so neither needs
+                a KeyGroup header above it. */}
+            <CredentialDrawer
+              id="github-keys"
+              title="GitHub &amp; Supply Chain"
+              intro="One token per consumer. Secret Hunt and Supply Chain scan a different set of repositories, so they hold separate github.com tokens: scope them differently, or revoke one without stopping the other. A GitHub Enterprise repository uses the Enterprise token instead, which is never sent to github.com."
+              groups={githubKeyGroups()}
+              value={name => (settings as unknown as Record<string, string>)[name] ?? ''}
+              isSet={name => !!(settings as unknown as Record<string, string>)[name]}
+              visible={name => !!visibleFields[name]}
+              onToggleVisibility={toggleFieldVisibility}
+              onChange={(name, v) => updateSetting(name as keyof typeof settings, v)}
+            />
+
+            <CredentialDrawer
+              id="trufflehog-keys"
+              title="Secret Multiscanner"
+              intro="One key per source. A source whose key is mandatory cannot start until it is set; the scan card says which one is missing. Keys are stored per user and are never included in a project export."
+              groups={trufflehogKeyGroups()}
+              value={name => (settings as unknown as Record<string, string>)[name] ?? ''}
+              isSet={name => !!(settings as unknown as Record<string, string>)[name]}
+              visible={name => !!visibleFields[name]}
+              onToggleVisibility={toggleFieldVisibility}
+              onChange={(name, v) => updateSetting(name as keyof typeof settings, v)}
+            />
+
+            <SecretField
+              label="Tavily API Key"
+              hint="Enables web_search tool for CVE research and exploit lookups"
+              signupUrl="https://app.tavily.com/home"
+              badges={['AI Agent']}
+              value={settings.tavilyApiKey}
+              visible={!!visibleFields.tavilyApiKey}
+              onToggle={() => toggleFieldVisibility('tavilyApiKey')}
+              onChange={v => updateSetting('tavilyApiKey', v)}
+              onConfigureRotation={() => openRotationModal('tavilyApiKey')}
+              rotationInfo={rotationConfigs.tavily || null}
+            />
+            <SecretField
+              label="Shodan API Key"
+              hint="Enables the shodan tool for internet-wide OSINT (search, host info, DNS, count)"
+              signupUrl="https://account.shodan.io/"
+              badges={['AI Agent', 'Recon Pipeline', 'Standalone + Uncover']}
+              value={settings.shodanApiKey}
+              visible={!!visibleFields.shodanApiKey}
+              onToggle={() => toggleFieldVisibility('shodanApiKey')}
+              onChange={v => updateSetting('shodanApiKey', v)}
+              onConfigureRotation={() => openRotationModal('shodanApiKey')}
+              rotationInfo={rotationConfigs.shodan || null}
+            />
+            <SecretField
+              label="SerpAPI Key"
+              hint="Enables google_dork tool for Google dorking OSINT (site:, inurl:, filetype:). Free: 250 searches/month"
+              signupUrl="https://serpapi.com/manage-api-key"
+              badges={['AI Agent']}
+              value={settings.serpApiKey}
+              visible={!!visibleFields.serpApiKey}
+              onToggle={() => toggleFieldVisibility('serpApiKey')}
+              onChange={v => updateSetting('serpApiKey', v)}
+              onConfigureRotation={() => openRotationModal('serpApiKey')}
+              rotationInfo={rotationConfigs.serp || null}
+            />
+            <SecretField
+              label="WPScan API Token"
+              hint="Enriches execute_wpscan results with vulnerability data from the WPScan database. Free: 25 requests/day"
+              signupUrl="https://wpscan.com/register"
+              badges={['AI Agent']}
+              value={settings.wpscanApiToken}
+              visible={!!visibleFields.wpscanApiToken}
+              onToggle={() => toggleFieldVisibility('wpscanApiToken')}
+              onChange={v => updateSetting('wpscanApiToken', v)}
+              onConfigureRotation={() => openRotationModal('wpscanApiToken')}
+              rotationInfo={rotationConfigs.wpscan || null}
+            />
+            <SecretField
+              label="PDCP API Key"
+              hint="Optional. Enriches the cve_intel tool by lifting the 10 req/min anonymous rate limit on ProjectDiscovery's CVE database (vulnx)."
+              signupUrl="https://cloud.projectdiscovery.io"
+              badges={['AI Agent']}
+              value={settings.pdcpApiKey}
+              visible={!!visibleFields.pdcpApiKey}
+              onToggle={() => toggleFieldVisibility('pdcpApiKey')}
+              onChange={v => updateSetting('pdcpApiKey', v)}
+              onConfigureRotation={() => openRotationModal('pdcpApiKey')}
+              rotationInfo={rotationConfigs.pdcp || null}
+            />
+            <SecretField
+              label="NVD API Key"
+              hint="NIST NVD API key - increases CVE lookup rate limit from 5 to 120 requests/30s"
+              signupUrl="https://nvd.nist.gov/developers/request-an-api-key"
+              badges={['Recon Pipeline']}
+              value={settings.nvdApiKey}
+              visible={!!visibleFields.nvdApiKey}
+              onToggle={() => toggleFieldVisibility('nvdApiKey')}
+              onChange={v => updateSetting('nvdApiKey', v)}
+              onConfigureRotation={() => openRotationModal('nvdApiKey')}
+              rotationInfo={rotationConfigs.nvd || null}
+            />
+            <SecretField
+              label="Vulners API Key"
+              hint="Vulners CVE database - alternative to NVD for vulnerability lookups with richer exploit data"
+              signupUrl="https://vulners.com/#register"
+              badges={['Recon Pipeline']}
+              value={settings.vulnersApiKey}
+              visible={!!visibleFields.vulnersApiKey}
+              onToggle={() => toggleFieldVisibility('vulnersApiKey')}
+              onChange={v => updateSetting('vulnersApiKey', v)}
+              onConfigureRotation={() => openRotationModal('vulnersApiKey')}
+              rotationInfo={rotationConfigs.vulners || null}
+            />
+            <SecretField
+              label="URLScan API Key"
+              hint="Optional - used by URLScan.io OSINT enrichment for higher rate limits. Works without key (public results only)"
+              signupUrl="https://urlscan.io/user/signup"
+              badges={['Recon Pipeline']}
+              value={settings.urlscanApiKey}
+              visible={!!visibleFields.urlscanApiKey}
+              onToggle={() => toggleFieldVisibility('urlscanApiKey')}
+              onChange={v => updateSetting('urlscanApiKey', v)}
+              onConfigureRotation={() => openRotationModal('urlscanApiKey')}
+              rotationInfo={rotationConfigs.urlscan || null}
+            />
+
+            <SecretField
+              label="Censys API Token"
+              hint="Censys Platform personal access token - used by Recon Pipeline and Uncover engine"
+              signupUrl="https://accounts.censys.io/settings/personal-access-tokens"
+              badges={['Recon Pipeline', 'Standalone + Uncover']}
+              value={settings.censysApiToken}
+              visible={!!visibleFields.censysApiToken}
+              onToggle={() => toggleFieldVisibility('censysApiToken')}
+              onChange={v => updateSetting('censysApiToken', v)}
+            />
+            <SecretField
+              label="Censys Organization ID"
+              hint="Censys Organization ID - paired with API Token above. Found on your Censys account page"
+              signupUrl="https://accounts.censys.io/settings/personal-access-tokens"
+              badges={['Recon Pipeline', 'Standalone + Uncover']}
+              value={settings.censysOrgId}
+              visible={!!visibleFields.censysOrgId}
+              onToggle={() => toggleFieldVisibility('censysOrgId')}
+              onChange={v => updateSetting('censysOrgId', v)}
+            />
+            <SecretField
+              label="FOFA API Key"
+              hint="FOFA cyberspace search - asset discovery by banner, certificate, domain. Key format: email:key"
+              signupUrl="https://en.fofa.info/"
+              badges={['Recon Pipeline', 'Standalone + Uncover']}
+              value={settings.fofaApiKey}
+              visible={!!visibleFields.fofaApiKey}
+              onToggle={() => toggleFieldVisibility('fofaApiKey')}
+              onChange={v => updateSetting('fofaApiKey', v)}
+              onConfigureRotation={() => openRotationModal('fofaApiKey')}
+              rotationInfo={rotationConfigs.fofa || null}
+            />
+            <SecretField
+              label="AlienVault OTX Key"
+              hint="Open Threat Exchange - threat intelligence pulses, malware indicators, passive DNS, reputation scoring"
+              signupUrl="https://otx.alienvault.com/settings"
+              badges={['Recon Pipeline']}
+              value={settings.otxApiKey}
+              visible={!!visibleFields.otxApiKey}
+              onToggle={() => toggleFieldVisibility('otxApiKey')}
+              onChange={v => updateSetting('otxApiKey', v)}
+              onConfigureRotation={() => openRotationModal('otxApiKey')}
+              rotationInfo={rotationConfigs.otx || null}
+            />
+            <SecretField
+              label="Netlas API Key"
+              hint="Netlas.io - internet-wide scan data with banners, certificates, and WHOIS info"
+              signupUrl="https://app.netlas.io/profile/"
+              badges={['Recon Pipeline', 'Standalone + Uncover']}
+              value={settings.netlasApiKey}
+              visible={!!visibleFields.netlasApiKey}
+              onToggle={() => toggleFieldVisibility('netlasApiKey')}
+              onChange={v => updateSetting('netlasApiKey', v)}
+              onConfigureRotation={() => openRotationModal('netlasApiKey')}
+              rotationInfo={rotationConfigs.netlas || null}
+            />
+            <SecretField
+              label="VirusTotal API Key"
+              hint="Multi-engine reputation for IPs and domains. Free tier: 4 lookups/min, 500/day"
+              signupUrl="https://www.virustotal.com/gui/my-apikey"
+              badges={['Recon Pipeline']}
+              value={settings.virusTotalApiKey}
+              visible={!!visibleFields.virusTotalApiKey}
+              onToggle={() => toggleFieldVisibility('virusTotalApiKey')}
+              onChange={v => updateSetting('virusTotalApiKey', v)}
+              onConfigureRotation={() => openRotationModal('virusTotalApiKey')}
+              rotationInfo={rotationConfigs.virustotal || null}
+            />
+            <SecretField
+              label="ZoomEye API Key"
+              hint="ZoomEye cyberspace search - host/device discovery with port, banner, and geo data"
+              signupUrl="https://www.zoomeye.ai/profile"
+              badges={['Recon Pipeline', 'Standalone + Uncover']}
+              value={settings.zoomEyeApiKey}
+              visible={!!visibleFields.zoomEyeApiKey}
+              onToggle={() => toggleFieldVisibility('zoomEyeApiKey')}
+              onChange={v => updateSetting('zoomEyeApiKey', v)}
+              onConfigureRotation={() => openRotationModal('zoomEyeApiKey')}
+              rotationInfo={rotationConfigs.zoomeye || null}
+            />
+            <SecretField
+              label="Criminal IP API Key"
+              hint="AI-powered threat intelligence - IP/domain risk scoring, vulnerability detection, proxy/VPN/Tor identification"
+              signupUrl="https://search.criminalip.io/mypage/information"
+              badges={['Recon Pipeline', 'Standalone + Uncover']}
+              value={settings.criminalIpApiKey}
+              visible={!!visibleFields.criminalIpApiKey}
+              onToggle={() => toggleFieldVisibility('criminalIpApiKey')}
+              onChange={v => updateSetting('criminalIpApiKey', v)}
+              onConfigureRotation={() => openRotationModal('criminalIpApiKey')}
+              rotationInfo={rotationConfigs.criminalip || null}
+            />
+            <SecretField
+              label="SecurityTrails API Key"
+              hint="SecurityTrails DNS history - reveals a domain's pre-CDN origin IPs. Used by Origin Discovery. Free tier available"
+              signupUrl="https://securitytrails.com/corp/api"
+              badges={['Recon Pipeline']}
+              value={settings.securitytrailsApiKey}
+              visible={!!visibleFields.securitytrailsApiKey}
+              onToggle={() => toggleFieldVisibility('securitytrailsApiKey')}
+              onChange={v => updateSetting('securitytrailsApiKey', v)}
+              onConfigureRotation={() => openRotationModal('securitytrailsApiKey')}
+              rotationInfo={rotationConfigs.securitytrails || null}
+            />
+            <SecretField
+              label="ViewDNS API Key"
+              hint="ViewDNS.info IP history - historical A records exposing the origin behind a CDN. Used by Origin Discovery"
+              signupUrl="https://viewdns.info/api/"
+              badges={['Recon Pipeline']}
+              value={settings.viewdnsApiKey}
+              visible={!!visibleFields.viewdnsApiKey}
+              onToggle={() => toggleFieldVisibility('viewdnsApiKey')}
+              onChange={v => updateSetting('viewdnsApiKey', v)}
+              onConfigureRotation={() => openRotationModal('viewdnsApiKey')}
+              rotationInfo={rotationConfigs.viewdns || null}
+            />
+
+            {/* Uncover group */}
+            <div style={{ borderTop: '1px solid var(--border-secondary)', marginTop: '0.75rem', paddingTop: '0.75rem' }}>
+              <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
+                Uncover (Multi-Engine Search)
+              </p>
+            </div>
+            <SecretField
+              label="Quake API Key"
+              hint="360 Quake cyberspace search - asset discovery by service, certificate, and banner"
+              signupUrl="https://quake.360.net/quake/#/index"
+              badges={['Uncover', 'Recon Pipeline']}
+              value={settings.quakeApiKey}
+              visible={!!visibleFields.quakeApiKey}
+              onToggle={() => toggleFieldVisibility('quakeApiKey')}
+              onChange={v => updateSetting('quakeApiKey', v)}
+              onConfigureRotation={() => openRotationModal('quakeApiKey')}
+              rotationInfo={rotationConfigs.quake || null}
+            />
+            <SecretField
+              label="Hunter API Key"
+              hint="Qianxin Hunter cyberspace search - Chinese threat intelligence platform"
+              signupUrl="https://hunter.qianxin.com/"
+              badges={['Uncover', 'Recon Pipeline']}
+              value={settings.hunterApiKey}
+              visible={!!visibleFields.hunterApiKey}
+              onToggle={() => toggleFieldVisibility('hunterApiKey')}
+              onChange={v => updateSetting('hunterApiKey', v)}
+              onConfigureRotation={() => openRotationModal('hunterApiKey')}
+              rotationInfo={rotationConfigs.hunter || null}
+            />
+            <SecretField
+              label="PublicWWW API Key"
+              hint="Search engine for source code - find websites using specific technologies, scripts, or snippets"
+              signupUrl="https://publicwww.com/profile/signup.html"
+              badges={['Uncover', 'Recon Pipeline']}
+              value={settings.publicWwwApiKey}
+              visible={!!visibleFields.publicWwwApiKey}
+              onToggle={() => toggleFieldVisibility('publicWwwApiKey')}
+              onChange={v => updateSetting('publicWwwApiKey', v)}
+              onConfigureRotation={() => openRotationModal('publicWwwApiKey')}
+              rotationInfo={rotationConfigs.publicwww || null}
+            />
+            <SecretField
+              label="HunterHow API Key"
+              hint="hunter.how internet search - asset discovery and reconnaissance"
+              signupUrl="https://hunter.how/"
+              badges={['Uncover', 'Recon Pipeline']}
+              value={settings.hunterHowApiKey}
+              visible={!!visibleFields.hunterHowApiKey}
+              onToggle={() => toggleFieldVisibility('hunterHowApiKey')}
+              onChange={v => updateSetting('hunterHowApiKey', v)}
+              onConfigureRotation={() => openRotationModal('hunterHowApiKey')}
+              rotationInfo={rotationConfigs.hunterhow || null}
+            />
+            <SecretField
+              label="Google Custom Search API Key"
+              hint="Google Custom Search JSON API - for Uncover Google search engine (different from SerpAPI)"
+              signupUrl="https://developers.google.com/custom-search/v1/introduction"
+              badges={['Uncover', 'Recon Pipeline']}
+              value={settings.googleApiKey}
+              visible={!!visibleFields.googleApiKey}
+              onToggle={() => toggleFieldVisibility('googleApiKey')}
+              onChange={v => updateSetting('googleApiKey', v)}
+            />
+            <SecretField
+              label="Google Custom Search CX"
+              hint="Programmable Search Engine ID - paired with Google API Key above"
+              signupUrl="https://programmablesearchengine.google.com/controlpanel/create"
+              badges={['Uncover', 'Recon Pipeline']}
+              value={settings.googleApiCx}
+              visible={!!visibleFields.googleApiCx}
+              onToggle={() => toggleFieldVisibility('googleApiCx')}
+              onChange={v => updateSetting('googleApiCx', v)}
+            />
+            <SecretField
+              label="Onyphe API Key"
+              hint="Onyphe - cyber defense search engine for exposed assets, threat detection, and attack surface management"
+              signupUrl="https://search.onyphe.io/signup"
+              badges={['Uncover', 'Recon Pipeline']}
+              value={settings.onypheApiKey}
+              visible={!!visibleFields.onypheApiKey}
+              onToggle={() => toggleFieldVisibility('onypheApiKey')}
+              onChange={v => updateSetting('onypheApiKey', v)}
+              onConfigureRotation={() => openRotationModal('onypheApiKey')}
+              rotationInfo={rotationConfigs.onyphe || null}
+            />
+            <SecretField
+              label="Driftnet API Key"
+              hint="Driftnet - fast internet-wide port and service discovery"
+              signupUrl="https://driftnet.io/auth?state=signup"
+              badges={['Uncover', 'Recon Pipeline']}
+              value={settings.driftnetApiKey}
+              visible={!!visibleFields.driftnetApiKey}
+              onToggle={() => toggleFieldVisibility('driftnetApiKey')}
+              onChange={v => updateSetting('driftnetApiKey', v)}
+              onConfigureRotation={() => openRotationModal('driftnetApiKey')}
+              rotationInfo={rotationConfigs.driftnet || null}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Tunneling sub-section */}
+      <div className={styles.section}>
+        <div className={styles.sectionHeader}>
+          <h2 className={styles.sectionTitle} style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+            <span>Tunneling</span>
+            <WikiInfoButton target="https://github.com/HackWidMaddy/CART/wiki/Reverse-Shells" title="Open Reverse Shells wiki page" />
+          </h2>
+        </div>
+        <p className={styles.sectionHint}>
+          Configure reverse shell tunneling. Choose ngrok (free, single port) or chisel (requires VPS). Tunnels must be explicitly enabled below and are turned OFF automatically on restart - re-enable them each session (they expose an internet-reachable listener, breaking the LAN-only posture).
+        </p>
+        {settingsLoading ? (
+          <div className={styles.emptyState}><Loader2 size={16} className={styles.spin} /> Loading...</div>
+        ) : (
+          <div className={styles.settingsGrid}>
+            <div className="formGroup">
+              <label className="formLabel" style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+                <input
+                  type="checkbox"
+                  checked={settings.tunnelsEnabled}
+                  onChange={e => updateSetting('tunnelsEnabled', e.target.checked)}
+                />
+                <span>Enable tunnels</span>
+              </label>
+              <span className="formHint">
+                When off, saved credentials are stored but no tunnel is started. Enabling exposes port 4444 to the internet via ngrok/chisel.
+              </span>
+            </div>
+            <SecretField
+              label="ngrok Auth Token"
+              hint="Enables ngrok TCP tunnel for reverse shells on port 4444. Stageless payloads only."
+              signupUrl="https://dashboard.ngrok.com/get-started/your-authtoken"
+              value={settings.ngrokAuthtoken}
+              visible={!!visibleFields.ngrokAuthtoken}
+              onToggle={() => toggleFieldVisibility('ngrokAuthtoken')}
+              onChange={v => updateSetting('ngrokAuthtoken', v)}
+            />
+            <div className="formGroup">
+              <label className="formLabel">Chisel Server URL</label>
+              <input
+                className="textInput"
+                type="text"
+                value={settings.chiselServerUrl}
+                onChange={e => updateSetting('chiselServerUrl', e.target.value)}
+                placeholder="e.g. http://your-vps.com:9090"
+              />
+              <span className="formHint">
+                Your VPS chisel server URL. Run on VPS: <code>chisel server -p 9090 --reverse</code>. Tunnels port 4444 (reverse-shell handler).
+              </span>
+            </div>
+            <SecretField
+              label="Chisel Auth"
+              hint="user:pass for chisel server authentication (optional - only if your chisel server requires auth)"
+              value={settings.chiselAuth}
+              visible={!!visibleFields.chiselAuth}
+              onToggle={() => toggleFieldVisibility('chiselAuth')}
+              onChange={v => updateSetting('chiselAuth', v)}
+            />
+          </div>
+        )}
+        {settingsDirty && !settingsSaving && (
+          <div className={styles.formActions} style={{ justifyContent: 'flex-end', marginTop: '12px' }}>
+            <button className="primaryButton" onClick={saveSettings} disabled={settingsSaving}>
+              Save Settings
+            </button>
+          </div>
+        )}
+      </div></>}
+
+      {/* Tab: System */}
+      {activeTab === 'mcp' && userId && <McpServersTab userId={userId} onDirtyChange={setChildDirty} />}
+      {activeTab === 'mcp-tokens' && userId && <McpTokensTab userId={userId} onDirtyChange={setChildDirty} />}
+
+      {activeTab === 'system' && (
+        <>
+          <SystemSection />
+        </>
+      )}
+
+      {/* Chat Skill upload modal */}
+      <Modal
+        isOpen={chatSkillNameModal}
+        onClose={() => { setChatSkillNameModal(false); setPendingChatSkillContent(''); setPendingChatSkillName(''); setPendingChatSkillDescription(''); setPendingChatSkillCategory('general') }}
+        title="Upload Chat Skill"
+        size="small"
+        footer={
+          <>
+            <button
+              className="secondaryButton"
+              onClick={() => { setChatSkillNameModal(false); setPendingChatSkillContent(''); setPendingChatSkillName(''); setPendingChatSkillDescription(''); setPendingChatSkillCategory('general') }}
+            >
+              Cancel
+            </button>
+            <button
+              className="primaryButton"
+              disabled={!pendingChatSkillName.trim() || chatSkillUploading}
+              onClick={confirmChatSkillUpload}
+            >
+              {chatSkillUploading ? <Loader2 size={14} className={styles.spin} /> : <Upload size={14} />}
+              Upload
+            </button>
+          </>
+        }
+      >
+        <div className="formGroup">
+          <label className="formLabel">Skill Name</label>
+          <input
+            className="textInput"
+            type="text"
+            value={pendingChatSkillName}
+            onChange={(e) => setPendingChatSkillName(e.target.value)}
+            placeholder="e.g. OWASP Top 10 Reference"
+            autoFocus
+          />
+        </div>
+        <div className="formGroup" style={{ marginTop: '12px' }}>
+          <label className="formLabel">Description</label>
+          <textarea
+            className="textInput"
+            rows={3}
+            value={pendingChatSkillDescription}
+            onChange={(e) => setPendingChatSkillDescription(e.target.value)}
+            placeholder="e.g. Quick reference for OWASP Top 10 vulnerability categories"
+            maxLength={500}
+          />
+          <span className="formHint">
+            Optional. Helps you remember what this skill covers.
+          </span>
+        </div>
+        <div className="formGroup" style={{ marginTop: '12px' }}>
+          <label className="formLabel">Category</label>
+          <select
+            className="textInput"
+            value={pendingChatSkillCategory}
+            onChange={(e) => setPendingChatSkillCategory(e.target.value)}
+          >
+            <option value="general">general</option>
+            <option value="vulnerabilities">vulnerabilities</option>
+            <option value="tooling">tooling</option>
+            <option value="scan_modes">scan_modes</option>
+            <option value="frameworks">frameworks</option>
+            <option value="technologies">technologies</option>
+            <option value="protocols">protocols</option>
+            <option value="coordination">coordination</option>
+            <option value="cloud">cloud</option>
+            <option value="mobile">mobile</option>
+            <option value="api_security">api_security</option>
+            <option value="wireless">wireless</option>
+            <option value="network">network</option>
+            <option value="active_directory">active_directory</option>
+            <option value="social_engineering">social_engineering</option>
+            <option value="reporting">reporting</option>
+          </select>
+          <span className="formHint">
+            Categorize this skill for easier browsing.
+          </span>
+        </div>
+      </Modal>
+
+      {/* Chat Skill edit description modal */}
+      <Modal
+        isOpen={editChatDescModal}
+        onClose={() => { setEditChatDescModal(false); setEditingChatSkillId(''); setEditingChatSkillDescription('') }}
+        title="Edit Chat Skill Description"
+        size="small"
+        footer={
+          <>
+            <button
+              className="secondaryButton"
+              onClick={() => { setEditChatDescModal(false); setEditingChatSkillId(''); setEditingChatSkillDescription('') }}
+            >
+              Cancel
+            </button>
+            <button
+              className="primaryButton"
+              disabled={editChatDescSaving}
+              onClick={saveEditChatDescription}
+            >
+              {editChatDescSaving ? <Loader2 size={14} className={styles.spin} /> : <Pencil size={14} />}
+              Save
+            </button>
+          </>
+        }
+      >
+        <div className="formGroup">
+          <label className="formLabel">Description</label>
+          <textarea
+            className="textInput"
+            rows={3}
+            value={editingChatSkillDescription}
+            onChange={(e) => setEditingChatSkillDescription(e.target.value)}
+            placeholder="e.g. Quick reference for OWASP Top 10 vulnerability categories"
+            maxLength={500}
+            autoFocus
+          />
+          <span className="formHint">
+            Optional description to help you remember what this skill covers.
+          </span>
+        </div>
+      </Modal>
+
+      <ApiUsageReportModal controller={apiUsage} />
+
+      {/* Key Rotation Modal */}
+      <Modal
+        isOpen={!!rotationModal}
+        onClose={closeRotationModal}
+        title={`Key Rotation - ${rotationModal || ''}`}
+        size="small"
+        footer={
+          <>
+            {rotationConfigs[rotationModal || '']?.extraKeyCount > 0 && !rotationDraftDirty && (
+              <button className="secondaryButton" onClick={clearRotationConfig} style={{ marginRight: 'auto' }}>
+                Clear All Extra Keys
+              </button>
+            )}
+            <button className="secondaryButton" onClick={closeRotationModal}>Cancel</button>
+            <button
+              className="primaryButton"
+              onClick={saveRotationDraft}
+              disabled={!rotationDraftDirty && rotationDraft.rotateEveryN === (rotationConfigs[rotationModal || '']?.rotateEveryN ?? 10)}
+            >
+              Save
+            </button>
+          </>
+        }
+      >
+        <div className="formGroup">
+          <label className="formLabel">Extra API Keys</label>
+          {rotationConfigs[rotationModal || '']?.extraKeyCount > 0 && !rotationDraftDirty ? (
+            <>
+              <div style={{
+                padding: '10px 12px',
+                background: 'var(--accent-secondary-subtle)',
+                borderRadius: '6px',
+                fontSize: '12px',
+                color: 'var(--accent-secondary)',
+                marginBottom: '8px',
+              }}>
+                {rotationConfigs[rotationModal || '']?.extraKeyCount} extra key(s) configured. Paste new keys below to replace them.
+              </div>
+              <textarea
+                className="textInput"
+                rows={5}
+                value={rotationDraft.extraKeys}
+                onChange={e => {
+                  setRotationDraft(prev => ({ ...prev, extraKeys: e.target.value }))
+                  setRotationDraftDirty(true)
+                }}
+                placeholder="Paste API keys here, one per line..."
+                style={{ fontFamily: 'monospace', fontSize: '12px' }}
+              />
+            </>
+          ) : (
+            <textarea
+              className="textInput"
+              rows={5}
+              value={rotationDraft.extraKeys}
+              onChange={e => {
+                setRotationDraft(prev => ({ ...prev, extraKeys: e.target.value }))
+                setRotationDraftDirty(true)
+              }}
+              placeholder="Paste API keys here, one per line..."
+              style={{ fontFamily: 'monospace', fontSize: '12px' }}
+              autoFocus
+            />
+          )}
+          <span className="formHint">
+            These keys plus the main key above form the rotation pool. All keys are treated equally.
+          </span>
+        </div>
+        <div className="formGroup" style={{ marginTop: '12px' }}>
+          <label className="formLabel">Rotate Every N Calls</label>
+          <input
+            className="textInput"
+            type="number"
+            min={1}
+            value={rotationDraft.rotateEveryN}
+            onChange={e => setRotationDraft(prev => ({ ...prev, rotateEveryN: parseInt(e.target.value, 10) || 10 }))}
+            style={{ width: '120px' }}
+          />
+          <span className="formHint">
+            After this many API calls, switch to the next key in the pool (default: 10).
+          </span>
+        </div>
+      </Modal>
+
+      {/* Import Keys Confirmation Modal */}
+      <Modal
+        isOpen={!!pendingImport}
+        onClose={() => setPendingImport(null)}
+        title="Import API Keys"
+        size="small"
+        footer={
+          <>
+            <button className="secondaryButton" onClick={() => setPendingImport(null)}>Cancel</button>
+            <button className="primaryButton" onClick={confirmImport}>
+              <Upload size={14} /> Import
+            </button>
+          </>
+        }
+      >
+        {pendingImport && (
+          <div style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+            <p style={{ marginBottom: '12px' }}>The following will be loaded into the form:</p>
+            <ul style={{ margin: 0, paddingLeft: '18px' }}>
+              {pendingImport.keyCount > 0 && <li><strong>{pendingImport.keyCount}</strong> API key{pendingImport.keyCount > 1 ? 's' : ''}</li>}
+              {pendingImport.rotationCount > 0 && <li><strong>{pendingImport.rotationCount}</strong> rotation config{pendingImport.rotationCount > 1 ? 's' : ''}</li>}
+              {pendingImport.tunnelingCount > 0 && <li><strong>{pendingImport.tunnelingCount}</strong> tunneling field{pendingImport.tunnelingCount > 1 ? 's' : ''}</li>}
+            </ul>
+            <p style={{ marginTop: '12px', fontSize: '12px', color: 'var(--text-tertiary)' }}>
+              Empty values and masked values are skipped. You must click <strong>Save Settings</strong> after import to persist.
+            </p>
+          </div>
+        )}
+      </Modal>
+
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// System Section (version info + update check)
+// ---------------------------------------------------------------------------
+
+function SystemSection() {
+  const { currentVersion, latestVersion, changelog, updateAvailable, loading } = useVersionCheck()
+
+  const [copied, setCopied] = useState(false)
+  const [expandedVersions, setExpandedVersions] = useState<Set<string>>(new Set())
+
+  const handleCopy = useCallback(() => {
+    copyText('./CART.sh update').then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }, [])
+
+  const toggleVersion = (version: string) => {
+    setExpandedVersions(prev => {
+      const next = new Set(prev)
+      if (next.has(version)) next.delete(version)
+      else next.add(version)
+      return next
+    })
+  }
+
+  return (
+    <div className={styles.section}>
+      <div className={styles.sectionHeader}>
+        <h2 className={styles.sectionTitle} style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+          <Info size={16} /> System
+          <WikiInfoButton target="https://github.com/HackWidMaddy/CART/wiki/Troubleshooting" title="Open Troubleshooting wiki page" />
+        </h2>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        {/* Version info */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+            Current version: <strong style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>v{currentVersion}</strong>
+          </span>
+
+          {latestVersion && !updateAvailable && (
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: '4px',
+              fontSize: '11px', fontWeight: 600, padding: '2px 8px', borderRadius: '4px',
+              background: 'var(--status-success-bg)', color: 'var(--status-success-text)',
+            }}>
+              Up to date
+            </span>
+          )}
+
+          {updateAvailable && latestVersion && (
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: '4px',
+              fontSize: '11px', fontWeight: 600, padding: '2px 8px', borderRadius: '4px',
+              background: 'var(--status-warning-bg)', color: 'var(--status-warning-text)',
+            }}>
+              v{latestVersion} available
+            </span>
+          )}
+
+          {loading && (
+            <Loader2 size={12} className={styles.spin} style={{ marginLeft: 'auto' }} />
+          )}
+        </div>
+
+        {/* Update available: show command + changelog */}
+        {updateAvailable && (
+          <>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: '8px',
+              padding: '8px 12px', background: 'var(--bg-primary)',
+              border: '1px solid var(--border-default)', borderRadius: '6px',
+              fontFamily: 'var(--font-mono)',
+            }}>
+              <code style={{ flex: 1, fontSize: '13px', color: 'var(--color-success)' }}>
+                ./CART.sh update
+              </code>
+              <button
+                onClick={handleCopy}
+                title="Copy command"
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  padding: '4px', background: 'none', border: '1px solid var(--border-default)',
+                  borderRadius: '4px', color: 'var(--text-tertiary)', cursor: 'pointer',
+                }}
+              >
+                {copied ? <Check size={12} /> : <Copy size={12} />}
+              </button>
+            </div>
+
+            {/* Changelog */}
+            {changelog && changelog.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                  Changes since v{currentVersion}:
+                </span>
+                <div style={{
+                  maxHeight: '250px', overflowY: 'auto',
+                  border: '1px solid var(--border-default)', borderRadius: '6px',
+                  background: 'var(--bg-primary)',
+                }}>
+                  {changelog.map((entry: { version: string; date: string; sections: { title: string; items: string[] }[] }) => {
+                    const isExpanded = expandedVersions.has(entry.version)
+                    return (
+                      <div key={entry.version} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                        <button
+                          type="button"
+                          onClick={() => toggleVersion(entry.version)}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: '6px',
+                            width: '100%', padding: '6px 10px', background: 'none',
+                            border: 'none', cursor: 'pointer', fontSize: '12px',
+                            color: 'var(--text-primary)', textAlign: 'left',
+                          }}
+                        >
+                          {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                          <strong style={{ fontFamily: 'var(--font-mono)' }}>v{entry.version}</strong>
+                          <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', marginLeft: 'auto' }}>{entry.date}</span>
+                        </button>
+                        {isExpanded && (
+                          <div style={{ padding: '0 10px 8px 28px' }}>
+                            {entry.sections.map((section: { title: string; items: string[] }) => (
+                              <div key={section.title} style={{ marginTop: '4px' }}>
+                                <div style={{ fontSize: '10px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                  {section.title}
+                                </div>
+                                <ul style={{ margin: '2px 0 0', paddingLeft: '16px', listStyle: 'disc' }}>
+                                  {section.items.map((item: string, i: number) => (
+                                    <li key={i} style={{ fontSize: '11px', color: 'var(--text-secondary)', lineHeight: '1.5' }}>{item}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Links */}
+        <div style={{ display: 'flex', gap: '12px', fontSize: '11px' }}>
+          <a
+            href="https://github.com/HackWidMaddy/CART/blob/master/CHANGELOG.md"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ display: 'flex', alignItems: 'center', gap: '4px', color: 'var(--text-tertiary)', textDecoration: 'none' }}
+          >
+            <ExternalLink size={11} /> Changelog
+          </a>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const BADGE_STYLES: Record<string, React.CSSProperties> = {
+  'AI Agent': {
+    display: 'inline-block',
+    fontSize: '10px',
+    fontWeight: 600,
+    padding: '1px 6px',
+    borderRadius: '4px',
+    background: 'var(--status-info-bg)',
+    color: 'var(--status-info-text)',
+    marginLeft: '6px',
+    verticalAlign: 'middle',
+    letterSpacing: '0.02em',
+  },
+  'Recon Pipeline': {
+    display: 'inline-block',
+    fontSize: '10px',
+    fontWeight: 600,
+    padding: '1px 6px',
+    borderRadius: '4px',
+    background: 'var(--status-success-bg)',
+    color: 'var(--status-success-text)',
+    marginLeft: '6px',
+    verticalAlign: 'middle',
+    letterSpacing: '0.02em',
+  },
+    // A badge with no entry here renders in the AI-Agent blue fallback. Define
+  // every badge you add.
+  }
+
+// Reusable secret field component
+function SecretField({
+  label,
+  hint,
+  signupUrl,
+  badges,
+  value,
+  visible,
+  onToggle,
+  onChange,
+  onConfigureRotation,
+  rotationInfo,
+}: {
+  label: string
+  hint: string
+  signupUrl?: string
+  badges?: string[]
+  value: string
+  visible: boolean
+  onToggle: () => void
+  onChange: (v: string) => void
+  onConfigureRotation?: () => void
+  rotationInfo?: RotationInfo | null
+}) {
+  const mainKeyCount = value && !value.startsWith('••••') ? 1 : value ? 1 : 0
+  const totalKeys = mainKeyCount + (rotationInfo?.extraKeyCount || 0)
+
+  return (
+    <div className="formGroup">
+      <label className="formLabel">
+        {label}
+        {badges?.map(badge => (
+          <span key={badge} style={BADGE_STYLES[badge] || BADGE_STYLES['AI Agent']}>
+            {badge}
+          </span>
+        ))}
+      </label>
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <div className={styles.secretInputWrapper} style={{ flex: 1 }}>
+          <input
+            className="textInput"
+            type={visible ? 'text' : 'password'}
+            value={value ?? ''}
+            onChange={e => onChange(e.target.value)}
+            placeholder={`Enter ${label.toLowerCase()}`}
+          />
+          <button className={styles.secretToggle} onClick={onToggle} type="button">
+            {visible ? <EyeOff size={14} /> : <Eye size={14} />}
+          </button>
+        </div>
+        {onConfigureRotation && (
+          <button
+            onClick={onConfigureRotation}
+            type="button"
+            title="Configure key rotation"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+              padding: '6px 10px',
+              fontSize: '11px',
+              fontWeight: 500,
+              color: rotationInfo && rotationInfo.extraKeyCount > 0 ? 'var(--accent-secondary)' : 'var(--text-secondary)',
+              background: rotationInfo && rotationInfo.extraKeyCount > 0 ? 'var(--accent-secondary-subtle)' : 'var(--bg-tertiary)',
+              border: '1px solid var(--border-default)',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+              flexShrink: 0,
+            }}
+          >
+            <RotateCw size={12} />
+            Key Rotation
+          </button>
+        )}
+      </div>
+      <span className="formHint">
+        {hint}
+        {signupUrl && (
+          <>
+            {' - '}
+            <a href={signupUrl} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-primary)' }}>
+              Get API key
+            </a>
+          </>
+        )}
+      </span>
+      {rotationInfo && rotationInfo.extraKeyCount > 0 && (
+        <span style={{
+          display: 'inline-block',
+          fontSize: '10px',
+          fontWeight: 600,
+          padding: '2px 8px',
+          borderRadius: '4px',
+          background: 'var(--accent-secondary-subtle)',
+          color: 'var(--accent-secondary)',
+          marginTop: '4px',
+          letterSpacing: '0.02em',
+        }}>
+          {totalKeys} keys total, rotate every {rotationInfo.rotateEveryN} calls
+        </span>
+      )}
+    </div>
+  )
+}

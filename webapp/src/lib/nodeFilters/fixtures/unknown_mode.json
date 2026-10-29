@@ -1,0 +1,34 @@
+{
+  "description": "An unknown mode filters nothing",
+  "mode": "keeplist",
+  "rules": {
+    "version": 1,
+    "kinds": {
+      "vuln.nuclei": {
+        "enabled": true,
+        "action": "mute",
+        "rules": [
+          {
+            "id": "k3f9a2",
+            "name": "Informational templates",
+            "enabled": true,
+            "all": [
+              {
+                "field": "severity",
+                "op": "in",
+                "value": [
+                  "info"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "ok": false,
+    "active": [],
+    "errors": 1
+  }
+}

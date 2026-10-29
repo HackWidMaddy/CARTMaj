@@ -1,0 +1,63 @@
+{
+  "description": "A rule has at most 8 conditions",
+  "mode": "denylist",
+  "rules": {
+    "version": 1,
+    "kinds": {
+      "vuln.nuclei": {
+        "enabled": true,
+        "action": "mute",
+        "rules": [
+          {
+            "id": "k3f9a2",
+            "name": "Many",
+            "enabled": true,
+            "all": [
+              {
+                "field": "template_id",
+                "op": "missing"
+              },
+              {
+                "field": "template_id",
+                "op": "missing"
+              },
+              {
+                "field": "template_id",
+                "op": "missing"
+              },
+              {
+                "field": "template_id",
+                "op": "missing"
+              },
+              {
+                "field": "template_id",
+                "op": "missing"
+              },
+              {
+                "field": "template_id",
+                "op": "missing"
+              },
+              {
+                "field": "template_id",
+                "op": "missing"
+              },
+              {
+                "field": "template_id",
+                "op": "missing"
+              },
+              {
+                "field": "template_id",
+                "op": "missing"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "ok": true,
+    "active": [],
+    "errors": 1
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "description": "An ordinal value must be on its scale",
+  "mode": "denylist",
+  "rules": {
+    "version": 1,
+    "kinds": {
+      "vuln.nuclei": {
+        "enabled": true,
+        "action": "mute",
+        "rules": [
+          {
+            "id": "k3f9a2",
+            "name": "Severe",
+            "enabled": true,
+            "all": [
+              {
+                "field": "severity",
+                "op": "gte",
+                "value": "severe"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "expect": {
+    "ok": true,
+    "active": [],
+    "errors": 1
+  }
+}

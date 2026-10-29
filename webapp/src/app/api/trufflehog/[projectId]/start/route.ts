@@ -1,0 +1,92 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { guardProject } from '@/lib/access'
+import { getEffectiveUser } from '@/lib/session'
+import { recordScanStart } from '@/lib/scanTimeline'
+import { currentRoeTextSha256 } from '@/lib/engagement'
+import { orchestratorFetch } from '@/lib/orchestrator'
+import { normalizeOrchestratorStartError } from '@/lib/orchestratorError'
+import { assertGraphNotActivating } from '@/lib/activationLock'
+import { resolveTrufflehogStart } from '@/lib/trufflehogStart'
+
+const RECON_ORCHESTRATOR_URL = process.env.RECON_ORCHESTRATOR_URL || 'http://localhost:8010'
+const WEBAPP_URL = process.env.WEBAPP_URL || 'http://localhost:3000'
+
+interface RouteParams {
+  params: Promise<{ projectId: string }>
+}
+
+/**
+ * Start ONE TruffleHog source.
+ *
+ * The body names the source (or the profile that defines it); everything else —
+ * the target config, the shared options, the credential — is resolved
+ * server-side. The run key is the source, so a second run of the same source is
+ * refused while other sources start freely.
+ *
+ * There is deliberately no "recon data must exist" precondition any more. It
+ * made sense when the only target was a GitHub org derived from recon; a Docker
+ * image or an S3 bucket has nothing to do with the recon graph, and the real
+ * authorization gate is the orchestrator's scope/ROE and egress checks.
+ */
+export async function POST(request: NextRequest, { params }: RouteParams) {
+  try {
+    const { projectId } = await params
+    const __denied = await guardProject(projectId)
+    if (__denied) return __denied
+
+    // A TruffleHog scan writes finding nodes into the live graph, so it must not
+    // start into an in-flight version swap.
+    const __activating = await assertGraphNotActivating(projectId)
+    if (__activating) return __activating
+
+    const body = await request.json().catch(() => ({}))
+    const resolved = await resolveTrufflehogStart(projectId, {
+      profileId: typeof body.profileId === 'string' ? body.profileId : undefined,
+      source: typeof body.source === 'string' ? body.source : undefined,
+      webappUrl: WEBAPP_URL,
+    })
+    if (!resolved.ok) {
+      return NextResponse.json({ error: resolved.error }, { status: resolved.status })
+    }
+
+    // Read before the start, so a RoE replaced mid-start cannot misattribute the run.
+    const roeTextSha256 = await currentRoeTextSha256(projectId)
+    const response = await orchestratorFetch(
+      `${RECON_ORCHESTRATOR_URL}/trufflehog/${projectId}/start`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(resolved.body),
+      },
+    )
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      // Governor rejections carry a structured object detail; normalize to a
+      // string message (+ limit) so it is never rendered as a raw React child.
+      const { error, limit } = normalizeOrchestratorStartError(
+        errorData, 'Failed to start Secret Multiscanner scan',
+      )
+      return NextResponse.json({ error, ...(limit ? { limit } : {}) }, { status: response.status })
+    }
+
+    // runId is the source: without it the reconcile closes only the newest of N
+    // parallel rows and the rest stick at `running` forever.
+    const __eff = await getEffectiveUser().catch(() => null)
+    await recordScanStart({
+      roeTextSha256,
+      projectId,
+      kind: 'trufflehog',
+      runId: resolved.source,
+      initiatedByUserId: __eff?.userId ?? null,
+    })
+
+    return NextResponse.json(await response.json())
+  } catch (error) {
+    console.error('Error starting TruffleHog scan:', error)
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Internal server error' },
+      { status: 500 },
+    )
+  }
+}

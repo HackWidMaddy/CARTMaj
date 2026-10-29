@@ -1,0 +1,419 @@
+.wrap {
+  /* Fill the graph-page table slot (.content is position:relative, NOT flex, so
+     `flex:1` here would be inert — absolute inset:0 is the pattern DataTable uses).
+     The outer box never scrolls; the active section (.tableWrap) scrolls or the
+     overlay flexes to fill. */
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  overflow: hidden;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+}
+
+/* Pin the wiki link to the right edge of the controls bar. */
+.wikiLink {
+  margin-left: auto;
+}
+
+.selectLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+}
+
+.select {
+  max-width: 280px;
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-default);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+
+.arrow {
+  color: var(--text-tertiary);
+}
+
+/* Totals moved onto the controls bar (right side, before JSON) to save vertical
+   space. margin-left:auto pushes it + the export button to the right edge. */
+.totalsBar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2) var(--space-3);
+  margin-left: auto;
+  font-size: var(--text-xs);
+}
+
+.totalsBar span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+/* "Show unchanged" toggle for the overlay, hoisted onto the controls bar. */
+.showUnchanged {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.showUnchanged input {
+  accent-color: var(--accent-primary);
+  cursor: pointer;
+}
+
+.exportBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.exportBtn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.note,
+.error,
+.emptyRow {
+  padding: var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.error {
+  color: #ef4444;
+}
+
+/* Circuit breakers: the newer run could not fully re-check some sources. */
+.coverageBanner {
+  margin: var(--space-2) var(--space-3) 0;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-xs);
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: var(--radius-sm, 4px);
+}
+:global([data-theme='dark']) .coverageBanner {
+  color: #fbbf24;
+}
+
+.empty {
+  padding: var(--space-6, var(--space-4));
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.empty p {
+  margin: 0 0 var(--space-2) 0;
+  font-size: var(--text-sm);
+}
+
+.emptyNote {
+  font-size: var(--text-xs) !important;
+  color: var(--text-tertiary);
+}
+
+.scorecard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-default);
+}
+
+.totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  font-size: var(--text-xs);
+}
+
+.totals span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.totalAdded { color: #059669; }
+.totalRemoved { color: #ef4444; }
+.totalChanged { color: var(--status-warning); }
+.totalStable { color: var(--text-tertiary); }
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.chipAdded { color: #059669; }
+.chipRemoved { color: #ef4444; }
+.chipChanged { color: var(--status-warning); }
+
+.tabs {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.tab {
+  padding: var(--space-2) var(--space-3);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.tab:hover { color: var(--text-primary); }
+
+.tabActive {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent-primary);
+}
+
+.tableWrap {
+  /* Takes the remaining height under the controls + scorecard + tabs. List
+     sections scroll here; the overlay child flexes to fill it. */
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-xs);
+}
+
+.table th {
+  position: sticky;
+  top: 0;
+  padding: var(--space-2);
+  background: var(--table-header-bg);
+  border-bottom: 1px solid var(--table-header-border);
+  text-align: left;
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--table-header-fg);
+  white-space: nowrap;
+}
+
+.table td {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--table-row-border);
+  color: var(--table-cell-fg);
+  vertical-align: top;
+}
+
+.table tbody tr:nth-child(even) {
+  background: var(--table-row-zebra-bg);
+}
+
+.table tbody tr:hover,
+.table tbody tr:nth-child(even):hover {
+  background: var(--table-row-hover-bg);
+}
+
+
+.added { color: #059669; }
+.removed { color: #ef4444; }
+.field { color: var(--text-secondary); }
+
+.props {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  word-break: break-all;
+}
+
+.lenses {
+  /* Fixed 4-up (not auto-fit): the lens bodies hold free-form node labels - long
+     URLs, package coordinates, cert subjects - and an auto-fit track collapses to
+     240px, at which point every label wraps to a column of single characters.
+     minmax(0, 1fr) is what lets a track shrink below its longest word. */
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+  align-items: start;
+}
+
+@media (max-width: 1400px) {
+  .lenses { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 1050px) {
+  .lenses { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 700px) {
+  .lenses { grid-template-columns: minmax(0, 1fr); }
+}
+
+.lens {
+  min-width: 0;
+  padding: var(--space-3);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-default);
+}
+
+.lensTitle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 var(--space-2) 0;
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+
+.lensBad { color: #ef4444; }
+.lensGood { color: #059669; }
+
+.lensEmpty {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.lensList {
+  /* A lens with hundreds of findings must not stretch the row; it scrolls on its
+     own so the 4-up grid keeps a predictable height. */
+  margin: 0;
+  padding-left: var(--space-4);
+  max-height: 15rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.lensList li {
+  margin-bottom: 2px;
+  overflow-wrap: anywhere;
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+  color: var(--text-tertiary);
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* --- Recon Delta graph overlay (Section 6.3) --- */
+/* Fills the remaining height instead of a fixed 480px block: min-height:0 on the
+   whole flex chain lets the canvas grow to the bottom of the page, and the force
+   graph (sized via useDimensions on .overlayCanvas) tracks it. A modest min-height
+   keeps it usable on very short viewports. */
+.overlayWrap {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 320px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-default);
+  overflow: hidden;
+}
+
+.overlayBody {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.overlayCanvas {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.overlayLoading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+}
+
+.overlayPanel {
+  /* Node-detail drawer: 50% of the page width (min 320px so it stays usable on
+     small screens); the canvas takes the remaining space. */
+  width: 50vw;
+  min-width: 320px;
+  flex-shrink: 0;
+  padding: var(--space-3);
+  border-left: 1px solid var(--border-default);
+  background: var(--bg-secondary);
+  overflow-y: auto;
+}
+
+.overlayPanelHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.overlayPanelClose {
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.overlayPanelState {
+  margin: var(--space-1) 0 var(--space-3) 0;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  text-transform: capitalize;
+}

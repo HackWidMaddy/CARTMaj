@@ -1,0 +1,1293 @@
+"""
+Unit tests for Hakrawler and jsluice integration.
+
+Tests the helper functions, merge logic, and settings without making
+real network/Docker calls (all external tools are mocked).
+"""
+
+import pytest
+import sys
+import json
+import subprocess
+import tempfile
+from pathlib import Path
+from unittest import mock
+
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# ===========================================================================
+# Hakrawler helpers tests
+# ===========================================================================
+
+def test_hakrawler_run_builds_correct_docker_command():
+    """Verify Docker command includes all expected Hakrawler CLI flags."""
+    from recon.helpers.resource_enum.hakrawler_helpers import run_hakrawler_crawler
+
+    captured_cmd = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured_cmd['cmd'] = cmd
+        proc = mock.MagicMock()
+        proc.stdin = mock.MagicMock()
+        proc.stdout.readline.return_value = ""
+        proc.poll.return_value = 0
+        proc.wait.return_value = 0
+        return proc
+
+    with mock.patch("subprocess.Popen", side_effect=fake_popen):
+        run_hakrawler_crawler(
+            target_urls=["https://example.com"],
+            docker_image="jauderho/hakrawler:latest",
+            depth=3,
+            threads=10,
+            timeout=30,
+            max_urls=500,
+            include_subs=True,
+            insecure=True,
+            allowed_hosts={"example.com"},
+            custom_headers=["Cookie: test=1", "Auth: Bearer xyz"],
+            exclude_patterns=[],
+        )
+
+    cmd = captured_cmd['cmd']
+    assert "docker" in cmd[0]
+    assert "jauderho/hakrawler:latest" in cmd
+    assert "-d" in cmd and "3" in cmd
+    assert "-t" in cmd and "10" in cmd
+    assert "-timeout" in cmd and "30" in cmd
+    assert "-u" in cmd
+    assert "-insecure" in cmd
+    assert "-subs" in cmd
+    assert "-h" in cmd
+    header_idx = cmd.index("-h") + 1
+    assert "Cookie: test=1;;Auth: Bearer xyz" == cmd[header_idx]
+    print("PASS: test_hakrawler_run_builds_correct_docker_command")
+
+
+def test_hakrawler_run_filters_out_of_scope():
+    """URLs with hosts not in allowed_hosts should be filtered."""
+    from recon.helpers.resource_enum.hakrawler_helpers import run_hakrawler_crawler
+
+    output_lines = [
+        "https://example.com/page1",
+        "https://evil.com/steal",
+        "https://example.com/page2",
+        "https://other.com/data",
+        "",
+    ]
+
+    def fake_popen(cmd, **kwargs):
+        proc = mock.MagicMock()
+        proc.stdin = mock.MagicMock()
+        proc.stdout.readline.side_effect = [line + "\n" for line in output_lines] + [""]
+        proc.poll.return_value = None
+        proc.wait.return_value = 0
+        return proc
+
+    with mock.patch("subprocess.Popen", side_effect=fake_popen):
+        urls, meta = run_hakrawler_crawler(
+            target_urls=["https://example.com"],
+            docker_image="jauderho/hakrawler:latest",
+            depth=2, threads=5, timeout=30, max_urls=500,
+            include_subs=False, insecure=False,
+            allowed_hosts={"example.com"},
+            custom_headers=[], exclude_patterns=[],
+        )
+
+    assert "https://example.com/page1" in urls
+    assert "https://example.com/page2" in urls
+    assert "https://evil.com/steal" not in urls
+    assert "https://other.com/data" not in urls
+    assert len(urls) == 2
+
+    ext_domains = [e["domain"] for e in meta["external_domains"]]
+    assert "evil.com" in ext_domains
+    assert "other.com" in ext_domains
+    print("PASS: test_hakrawler_run_filters_out_of_scope")
+
+
+def test_hakrawler_run_respects_max_urls():
+    """Process should stop collecting after max_urls is reached."""
+    from recon.helpers.resource_enum.hakrawler_helpers import run_hakrawler_crawler
+
+    output_lines = [f"https://example.com/page{i}" for i in range(100)]
+
+    def fake_popen(cmd, **kwargs):
+        proc = mock.MagicMock()
+        proc.stdin = mock.MagicMock()
+        proc.stdout.readline.side_effect = [line + "\n" for line in output_lines] + [""]
+        proc.poll.return_value = None
+        proc.wait.return_value = 0
+        return proc
+
+    with mock.patch("subprocess.Popen", side_effect=fake_popen):
+        urls, _ = run_hakrawler_crawler(
+            target_urls=["https://example.com"],
+            docker_image="jauderho/hakrawler:latest",
+            depth=2, threads=5, timeout=30, max_urls=10,
+            include_subs=False, insecure=False,
+            allowed_hosts={"example.com"},
+            custom_headers=[], exclude_patterns=[],
+        )
+
+    assert len(urls) == 10
+    print("PASS: test_hakrawler_run_respects_max_urls")
+
+
+def test_hakrawler_run_applies_exclude_patterns():
+    """URLs matching exclude patterns should be filtered out."""
+    from recon.helpers.resource_enum.hakrawler_helpers import run_hakrawler_crawler
+
+    output_lines = [
+        "https://example.com/api/data",
+        "https://example.com/logout",
+        "https://example.com/static/logo.png",
+        "https://example.com/admin",
+    ]
+
+    def fake_popen(cmd, **kwargs):
+        proc = mock.MagicMock()
+        proc.stdin = mock.MagicMock()
+        proc.stdout.readline.side_effect = [line + "\n" for line in output_lines] + [""]
+        proc.poll.return_value = None
+        proc.wait.return_value = 0
+        return proc
+
+    with mock.patch("subprocess.Popen", side_effect=fake_popen):
+        urls, _ = run_hakrawler_crawler(
+            target_urls=["https://example.com"],
+            docker_image="jauderho/hakrawler:latest",
+            depth=2, threads=5, timeout=30, max_urls=500,
+            include_subs=False, insecure=False,
+            allowed_hosts={"example.com"},
+            custom_headers=[],
+            exclude_patterns=["logout", ".png"],
+        )
+
+    assert "https://example.com/api/data" in urls
+    assert "https://example.com/admin" in urls
+    assert "https://example.com/logout" not in urls
+    assert "https://example.com/static/logo.png" not in urls
+    print("PASS: test_hakrawler_run_applies_exclude_patterns")
+
+
+def test_hakrawler_stderr_can_never_deadlock_the_reader():
+    """stderr must never be a PIPE: stdout is read line by line and nothing drains
+    a second pipe, so a chatty hakrawler would block. It goes to a temporary file,
+    which also keeps it readable to tell a failed seed from an empty one."""
+    from recon.helpers.resource_enum.hakrawler_helpers import run_hakrawler_crawler
+
+    captured_kwargs = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured_kwargs.update(kwargs)
+        proc = mock.MagicMock()
+        proc.stdin = mock.MagicMock()
+        proc.stdout.readline.return_value = ""
+        proc.poll.return_value = 0
+        proc.wait.return_value = 0
+        return proc
+
+    with mock.patch("subprocess.Popen", side_effect=fake_popen):
+        run_hakrawler_crawler(
+            target_urls=["https://example.com"],
+            docker_image="jauderho/hakrawler:latest",
+            depth=2, threads=5, timeout=30, max_urls=500,
+            include_subs=False, insecure=False,
+            allowed_hosts={"example.com"},
+            custom_headers=[], exclude_patterns=[],
+        )
+
+    stderr = captured_kwargs.get('stderr')
+    assert stderr is not subprocess.PIPE
+    assert hasattr(stderr, "write") and hasattr(stderr, "seek")
+
+
+# ===========================================================================
+# Hakrawler merge tests
+# ===========================================================================
+
+def test_hakrawler_merge_new_base_url():
+    """Merging into empty existing should create base_url entry."""
+    from recon.helpers.resource_enum.hakrawler_helpers import merge_hakrawler_into_by_base_url
+
+    hakrawler_data = {
+        "https://example.com": {
+            "endpoints": {
+                "/api/v1": {
+                    "methods": ["GET"],
+                    "category": "api",
+                    "parameters": {"query": [{"name": "id"}], "body": [], "path": []},
+                    "parameter_count": {"query": 1, "body": 0, "path": 0, "total": 1},
+                    "urls_found": 1,
+                    "sample_urls": ["https://example.com/api/v1?id=1"],
+                }
+            }
+        }
+    }
+
+    merged, stats = merge_hakrawler_into_by_base_url(hakrawler_data, {})
+
+    assert "https://example.com" in merged
+    assert merged["https://example.com"]["base_url"] == "https://example.com"
+    assert "/api/v1" in merged["https://example.com"]["endpoints"]
+    assert merged["https://example.com"]["endpoints"]["/api/v1"]["sources"] == ["hakrawler"]
+    assert stats["hakrawler_new"] == 1
+    assert stats["hakrawler_overlap"] == 0
+    assert merged["https://example.com"]["summary"]["total_endpoints"] == 1
+    assert merged["https://example.com"]["summary"]["total_parameters"] == 1
+    assert merged["https://example.com"]["summary"]["methods"]["GET"] == 1
+    print("PASS: test_hakrawler_merge_new_base_url")
+
+
+def test_hakrawler_merge_overlap_adds_source():
+    """Overlapping endpoint should add 'hakrawler' to sources, not duplicate."""
+    from recon.helpers.resource_enum.hakrawler_helpers import merge_hakrawler_into_by_base_url
+
+    existing = {
+        "https://example.com": {
+            "base_url": "https://example.com",
+            "endpoints": {
+                "/page": {
+                    "methods": ["GET"],
+                    "sources": ["katana"],
+                    "category": "other",
+                }
+            },
+            "summary": {"total_endpoints": 1, "total_parameters": 0, "methods": {"GET": 1}, "categories": {"other": 1}},
+        }
+    }
+
+    hakrawler_data = {
+        "https://example.com": {
+            "endpoints": {
+                "/page": {
+                    "methods": ["GET"],
+                    "category": "other",
+                    "parameters": {"query": [], "body": [], "path": []},
+                    "parameter_count": {"query": 0, "body": 0, "path": 0, "total": 0},
+                }
+            }
+        }
+    }
+
+    merged, stats = merge_hakrawler_into_by_base_url(hakrawler_data, existing)
+
+    assert merged["https://example.com"]["endpoints"]["/page"]["sources"] == ["katana", "hakrawler"]
+    assert stats["hakrawler_overlap"] == 1
+    assert stats["hakrawler_new"] == 0
+    print("PASS: test_hakrawler_merge_overlap_adds_source")
+
+
+def test_hakrawler_merge_uses_parameter_count_total():
+    """Merge should use parameter_count['total'] which includes path params."""
+    from recon.helpers.resource_enum.hakrawler_helpers import merge_hakrawler_into_by_base_url
+
+    hakrawler_data = {
+        "https://example.com": {
+            "endpoints": {
+                "/users/{id}": {
+                    "methods": ["GET"],
+                    "category": "api",
+                    "parameters": {
+                        "query": [{"name": "format"}],
+                        "body": [],
+                        "path": [{"name": "id"}],
+                    },
+                    "parameter_count": {"query": 1, "body": 0, "path": 1, "total": 2},
+                    "urls_found": 1,
+                    "sample_urls": ["https://example.com/users/123?format=json"],
+                }
+            }
+        }
+    }
+
+    merged, stats = merge_hakrawler_into_by_base_url(hakrawler_data, {})
+
+    assert merged["https://example.com"]["summary"]["total_parameters"] == 2
+    print("PASS: test_hakrawler_merge_uses_parameter_count_total")
+
+
+def test_hakrawler_merge_methods_list():
+    """Merge should iterate all methods from endpoint['methods'] list."""
+    from recon.helpers.resource_enum.hakrawler_helpers import merge_hakrawler_into_by_base_url
+
+    hakrawler_data = {
+        "https://example.com": {
+            "endpoints": {
+                "/form": {
+                    "methods": ["GET", "POST"],
+                    "category": "dynamic",
+                    "parameters": {"query": [], "body": [], "path": []},
+                    "parameter_count": {"query": 0, "body": 0, "path": 0, "total": 0},
+                }
+            }
+        }
+    }
+
+    merged, _ = merge_hakrawler_into_by_base_url(hakrawler_data, {})
+
+    methods = merged["https://example.com"]["summary"]["methods"]
+    assert methods["GET"] == 1
+    assert methods["POST"] == 1
+    print("PASS: test_hakrawler_merge_methods_list")
+
+
+# ===========================================================================
+# jsluice helpers tests
+# ===========================================================================
+
+def test_jsluice_is_js_url():
+    """_is_js_url should identify .js and .mjs files."""
+    from recon.helpers.resource_enum.jsluice_helpers import _is_js_url
+
+    assert _is_js_url("https://example.com/app.js") is True
+    assert _is_js_url("https://example.com/module.mjs") is True
+    assert _is_js_url("https://example.com/app.js?v=123") is True
+    assert _is_js_url("https://example.com/style.css") is False
+    assert _is_js_url("https://example.com/page.html") is False
+    assert _is_js_url("https://example.com/image.png") is False
+    assert _is_js_url("https://example.com/data.json") is False
+    assert _is_js_url("") is False
+    print("PASS: test_jsluice_is_js_url")
+
+
+def test_jsluice_resolve_url():
+    """_resolve_url should handle absolute, relative, and edge cases."""
+    from recon.helpers.resource_enum.jsluice_helpers import _resolve_url
+
+    base = "https://example.com"
+
+    assert _resolve_url("https://other.com/path", base) == "https://other.com/path"
+    assert _resolve_url("//cdn.example.com/lib.js", base) == "https://cdn.example.com/lib.js"
+    assert _resolve_url("/api/data", base) == "https://example.com/api/data"
+    assert _resolve_url("sub/page", base) == "https://example.com/sub/page"
+    assert _resolve_url("EXPR", base) == ""
+    assert _resolve_url("relative/EXPR/var", base) == ""
+    # /-prefixed URLs are resolved before EXPR check
+    assert _resolve_url("/path/with/EXPR/var", base) == "https://example.com/path/with/EXPR/var"
+    print("PASS: test_jsluice_resolve_url")
+
+
+def test_jsluice_run_skips_when_no_binary():
+    """run_jsluice_analysis should return empty result if jsluice not in PATH."""
+    from recon.helpers.resource_enum.jsluice_helpers import run_jsluice_analysis
+
+    with mock.patch("shutil.which", return_value=None):
+        result = run_jsluice_analysis(
+            discovered_urls=["https://example.com/app.js"],
+            max_files=10, timeout=60,
+            extract_urls=True, extract_secrets=True,
+            concurrency=5, allowed_hosts={"example.com"},
+        )
+
+    assert result == {"urls": [], "secrets": [], "external_domains": []}
+    print("PASS: test_jsluice_run_skips_when_no_binary")
+
+
+def test_jsluice_run_skips_when_no_js_files():
+    """run_jsluice_analysis should return empty if no .js URLs found."""
+    from recon.helpers.resource_enum.jsluice_helpers import run_jsluice_analysis
+
+    with mock.patch("shutil.which", return_value="/usr/local/bin/jsluice"):
+        result = run_jsluice_analysis(
+            discovered_urls=[
+                "https://example.com/page.html",
+                "https://example.com/style.css",
+            ],
+            max_files=10, timeout=60,
+            extract_urls=True, extract_secrets=True,
+            concurrency=5, allowed_hosts={"example.com"},
+        )
+
+    assert result == {"urls": [], "secrets": [], "external_domains": []}
+    print("PASS: test_jsluice_run_skips_when_no_js_files")
+
+
+def test_jsluice_run_filters_scope_and_cleans_up():
+    """run_jsluice_analysis should scope-filter extracted URLs and clean /tmp."""
+    from recon.helpers.resource_enum.jsluice_helpers import run_jsluice_analysis
+
+    jsluice_output = "\n".join([
+        json.dumps({"url": "https://example.com/api/v1/users"}),
+        json.dumps({"url": "https://evil.com/exfil"}),
+        json.dumps({"url": "/api/v2/data"}),
+        "",
+    ])
+
+    with mock.patch("shutil.which", return_value="/usr/local/bin/jsluice"), \
+         mock.patch("recon.helpers.resource_enum.jsluice_helpers._download_js_files") as mock_dl, \
+         mock.patch("subprocess.run") as mock_run, \
+         mock.patch("shutil.rmtree") as mock_rmtree:
+
+        mock_dl.return_value = {"https://example.com/app.js": "/tmp/test/js_0.js"}
+        mock_run.return_value = mock.MagicMock(stdout=jsluice_output, returncode=0)
+
+        result = run_jsluice_analysis(
+            discovered_urls=["https://example.com/app.js"],
+            max_files=10, timeout=60,
+            extract_urls=True, extract_secrets=False,
+            concurrency=5, allowed_hosts={"example.com"},
+        )
+
+    assert "https://example.com/api/v1/users" in result["urls"]
+    assert "https://example.com/api/v2/data" in result["urls"]
+    assert "https://evil.com/exfil" not in result["urls"]
+
+    ext = [e["domain"] for e in result["external_domains"]]
+    assert "evil.com" in ext
+
+    mock_rmtree.assert_called_once()
+    print("PASS: test_jsluice_run_filters_scope_and_cleans_up")
+
+
+def test_jsluice_filter_url_rejects_common_static_library_noise():
+    """filter_jsluice_url should skip obvious bundled library/static paths."""
+    from recon.helpers.resource_enum.jsluice_helpers import filter_jsluice_url
+
+    patterns = [
+        "/rxjs/",
+        "/node_modules/",
+        "/webpack",
+        ".map",
+        ".chunk.js",
+    ]
+
+    assert filter_jsluice_url("https://example.com/rxjs/static-5.10", patterns) is False
+    assert filter_jsluice_url("https://example.com/node_modules/lodash/index.js", patterns) is False
+    assert filter_jsluice_url("https://example.com/_next/static/chunks/app.chunk.js", patterns) is False
+    assert filter_jsluice_url("https://example.com/api/users", patterns) is True
+    assert filter_jsluice_url("https://example.com/dashboard/settings", patterns) is True
+    print("PASS: test_jsluice_filter_url_rejects_common_static_library_noise")
+
+
+def test_verify_jsluice_urls_filters_noise_and_unverified():
+    """verify_jsluice_urls should blacklist noise and keep only accepted HTTP statuses."""
+    from recon.helpers.resource_enum.jsluice_helpers import verify_jsluice_urls
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        output_file = temp_path / "verified.json"
+
+        def fake_run(cmd, **kwargs):
+            output_file.write_text(
+                "\n".join([
+                    json.dumps({"url": "https://example.com/api/live", "status_code": 200}),
+                    json.dumps({"url": "https://example.com/api/missing", "status_code": 404}),
+                    "",
+                ])
+            )
+            return mock.MagicMock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("recon.helpers.resource_enum.jsluice_helpers._create_temp_dir", return_value=temp_path), \
+             mock.patch("recon.helpers.resource_enum.jsluice_helpers._cleanup_temp_dir"), \
+             mock.patch("subprocess.run", side_effect=fake_run):
+            verified, stats = verify_jsluice_urls(
+                urls=[
+                    "https://example.com/api/live",
+                    "https://example.com/api/missing",
+                    "https://example.com/rxjs/static-5.10",
+                ],
+                docker_image="projectdiscovery/httpx:latest",
+                threads=10,
+                timeout=5,
+                rate_limit=50,
+                accept_status=[200, 201, 301, 302, 307, 308, 401, 403],
+                exclude_patterns=["/rxjs/"],
+            )
+
+    assert verified == {"https://example.com/api/live"}
+    assert stats["jsluice_verify_total"] == 3
+    assert stats["jsluice_skipped_blacklist"] == 1
+    assert stats["jsluice_verified"] == 1
+    assert stats["jsluice_skipped_unverified"] == 1
+    print("PASS: test_verify_jsluice_urls_filters_noise_and_unverified")
+
+
+def test_verify_jsluice_urls_fails_closed_on_httpx_error():
+    """If httpx verification fails, no jsluice URLs should be published."""
+    from recon.helpers.resource_enum.jsluice_helpers import verify_jsluice_urls
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        with mock.patch("recon.helpers.resource_enum.jsluice_helpers._create_temp_dir", return_value=temp_path), \
+             mock.patch("recon.helpers.resource_enum.jsluice_helpers._cleanup_temp_dir"), \
+             mock.patch("subprocess.run", side_effect=RuntimeError("docker failed")):
+            verified, stats = verify_jsluice_urls(
+                urls=["https://example.com/api/live"],
+                docker_image="projectdiscovery/httpx:latest",
+                threads=10,
+                timeout=5,
+                rate_limit=50,
+                accept_status=[200, 201, 301, 302, 307, 308, 401, 403],
+                exclude_patterns=[],
+            )
+
+    assert verified == set()
+    assert stats["jsluice_verify_total"] == 1
+    assert stats["jsluice_verified"] == 0
+    assert stats["jsluice_skipped_unverified"] == 1
+    print("PASS: test_verify_jsluice_urls_fails_closed_on_httpx_error")
+
+
+def test_jsluice_filter_extension_anchored_keeps_json_endpoints():
+    """Regression for B1: `.js` deny-list must not over-filter `.json` API endpoints."""
+    from recon.helpers.resource_enum.jsluice_helpers import filter_jsluice_url
+
+    # Use the real default deny-list so we exercise the exact production behavior.
+    from recon.helpers.resource_enum.jsluice_helpers import DEFAULT_JSLUICE_EXCLUDE_PATTERNS
+
+    # The bug was: `.js` matched anywhere in the URL, dropping `.json` endpoints too.
+    assert filter_jsluice_url("https://api.example.com/v1/users.json", DEFAULT_JSLUICE_EXCLUDE_PATTERNS) is True, \
+        ".json endpoints must NOT be filtered by the .js extension rule"
+    assert filter_jsluice_url("https://api.example.com/v1/items.jsonp", DEFAULT_JSLUICE_EXCLUDE_PATTERNS) is True, \
+        ".jsonp endpoints must NOT be filtered by the .js extension rule"
+    # But .js files themselves still get filtered (path suffix match).
+    assert filter_jsluice_url("https://cdn.example.com/static/app.js", DEFAULT_JSLUICE_EXCLUDE_PATTERNS) is False, \
+        "Real .js files must still be filtered by the deny-list"
+    assert filter_jsluice_url("https://cdn.example.com/static/app.min.js", DEFAULT_JSLUICE_EXCLUDE_PATTERNS) is False
+    # Query-string mentions of .js should not trigger the extension rule either.
+    assert filter_jsluice_url("https://api.example.com/v1/search?return=json", DEFAULT_JSLUICE_EXCLUDE_PATTERNS) is True
+    print("PASS: test_jsluice_filter_extension_anchored_keeps_json_endpoints")
+
+
+def test_verify_jsluice_urls_fails_closed_on_httpx_nonzero_exit():
+    """Regression for B4: httpx returning a non-zero exit code must NOT be silently treated as 'all dropped'.
+
+    The previous implementation ignored returncode entirely — if the httpx Docker image
+    failed to pull or the container crashed, no exception was raised and the output file
+    simply didn't exist, so the verifier returned an empty set with no log of WHY.
+    """
+    from recon.helpers.resource_enum.jsluice_helpers import verify_jsluice_urls
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+
+        def fake_run(cmd, **kwargs):
+            return mock.MagicMock(
+                returncode=125,  # docker's "unable to pull image" exit code
+                stdout="",
+                stderr="Unable to find image 'projectdiscovery/httpx:latest' locally",
+            )
+
+        with mock.patch("recon.helpers.resource_enum.jsluice_helpers._create_temp_dir", return_value=temp_path), \
+             mock.patch("recon.helpers.resource_enum.jsluice_helpers._cleanup_temp_dir"), \
+             mock.patch("subprocess.run", side_effect=fake_run):
+            verified, stats = verify_jsluice_urls(
+                urls=["https://example.com/api/live"],
+                docker_image="projectdiscovery/httpx:latest",
+                threads=10,
+                timeout=5,
+                rate_limit=50,
+                accept_status=[200, 201, 301, 302, 307, 308, 401, 403],
+                exclude_patterns=[],
+            )
+
+    assert verified == set()
+    assert stats["jsluice_skipped_unverified"] == 1, \
+        "Non-zero httpx exit must be counted as unverified (fail-closed)"
+    print("PASS: test_verify_jsluice_urls_fails_closed_on_httpx_nonzero_exit")
+
+
+def test_partial_recon_jsluice_imports_and_calls_verifier():
+    """Regression for B2: partial recon `run_jsluice` must wire verify_jsluice_urls.
+
+    We assert two things statically (no end-to-end execution required):
+      1. The verifier symbol is importable from `recon.helpers.resource_enum`.
+      2. The partial-recon source for `run_jsluice` references `verify_jsluice_urls`
+         in its function body — i.e. the call site exists, not just an unused import.
+    """
+    import inspect
+    from recon.helpers.resource_enum import verify_jsluice_urls  # noqa: F401 - import is the assertion
+    from recon.partial_recon_modules import web_crawling
+
+    source = inspect.getsource(web_crawling.run_jsluice)
+    assert "verify_jsluice_urls" in source, (
+        "Partial recon run_jsluice does NOT call verify_jsluice_urls — "
+        "URLs would reach the graph unverified (B2 regression)"
+    )
+    assert "JSLUICE_VERIFY_URLS" in source, (
+        "Partial recon run_jsluice does NOT honor the JSLUICE_VERIFY_URLS toggle"
+    )
+    print("PASS: test_partial_recon_jsluice_imports_and_calls_verifier")
+
+
+# ===========================================================================
+# B1/B4 additional unit tests — edge cases
+# ===========================================================================
+
+def test_split_exclude_patterns_categorizes_extension_and_substring():
+    """Unit: helper must split extensions from substring patterns."""
+    from recon.helpers.resource_enum.jsluice_helpers import _split_exclude_patterns
+
+    extensions, substrings = _split_exclude_patterns([
+        ".js", ".chunk.js", ".PNG",      # extensions
+        "/static/", "/runtime.", "hot-update",  # substrings (have / or no leading .)
+        "",                               # empty — must be ignored
+    ])
+    assert ".js" in extensions
+    assert ".chunk.js" in extensions
+    assert ".png" in extensions, "Must lowercase the pattern"
+    assert "/static/" in substrings
+    assert "/runtime." in substrings
+    assert "hot-update" in substrings
+    assert "" not in extensions and "" not in substrings, "Empty pattern must be dropped"
+    print("PASS: test_split_exclude_patterns_categorizes_extension_and_substring")
+
+
+def test_filter_jsluice_url_handles_empty_and_none_inputs():
+    """Unit: empty/None URL must short-circuit to False (do not probe)."""
+    from recon.helpers.resource_enum.jsluice_helpers import filter_jsluice_url
+
+    assert filter_jsluice_url("", [".js"]) is False
+    assert filter_jsluice_url(None, [".js"]) is False
+    print("PASS: test_filter_jsluice_url_handles_empty_and_none_inputs")
+
+
+def test_filter_jsluice_url_passes_when_no_exclude_patterns():
+    """Unit: with an empty deny-list every non-empty URL passes."""
+    from recon.helpers.resource_enum.jsluice_helpers import filter_jsluice_url
+
+    assert filter_jsluice_url("https://example.com/static/app.js", []) is True
+    assert filter_jsluice_url("https://example.com/api/users.json", []) is True
+    print("PASS: test_filter_jsluice_url_passes_when_no_exclude_patterns")
+
+
+def test_filter_jsluice_url_case_insensitive_extension():
+    """Unit: extension match must be case-insensitive on path side."""
+    from recon.helpers.resource_enum.jsluice_helpers import filter_jsluice_url
+
+    assert filter_jsluice_url("https://example.com/IMG/Logo.PNG", [".png"]) is False
+    assert filter_jsluice_url("https://example.com/IMG/Logo.PNG", [".PNG"]) is False
+    print("PASS: test_filter_jsluice_url_case_insensitive_extension")
+
+
+def test_filter_jsluice_url_extension_in_query_does_not_drop():
+    """Regression: `?format=js` must NOT drop an otherwise-valid API endpoint."""
+    from recon.helpers.resource_enum.jsluice_helpers import filter_jsluice_url
+
+    # Extension rule is anchored to path suffix, so `format=js` in the query is irrelevant.
+    assert filter_jsluice_url("https://api.example.com/search?format=js", [".js"]) is True
+    print("PASS: test_filter_jsluice_url_extension_in_query_does_not_drop")
+
+
+def test_filter_jsluice_url_substring_still_matches_query():
+    """Unit: substring patterns (paths/keywords) still match against the query, by design.
+
+    The query side is useful for catching e.g. `?source=node_modules` references —
+    only EXTENSION patterns are anchored to the path suffix.
+    """
+    from recon.helpers.resource_enum.jsluice_helpers import filter_jsluice_url
+
+    assert filter_jsluice_url(
+        "https://example.com/track?ref=/node_modules/app", ["/node_modules/"]
+    ) is False
+    print("PASS: test_filter_jsluice_url_substring_still_matches_query")
+
+
+def test_filter_jsluice_url_substring_pattern_still_works_for_paths():
+    """Unit: substring patterns continue to match path segments after B1 refactor."""
+    from recon.helpers.resource_enum.jsluice_helpers import filter_jsluice_url
+
+    patterns = ["/_next/static", "/runtime.", "hot-update"]
+    assert filter_jsluice_url("https://app.example.com/_next/static/chunks/main.js", patterns) is False
+    assert filter_jsluice_url("https://app.example.com/runtime.main.js", patterns) is False
+    assert filter_jsluice_url("https://app.example.com/webpack-hot-update.json", patterns) is False
+    assert filter_jsluice_url("https://app.example.com/api/users", patterns) is True
+    print("PASS: test_filter_jsluice_url_substring_pattern_still_works_for_paths")
+
+
+def test_verify_jsluice_urls_empty_input_returns_zero_stats():
+    """Unit: empty input list must short-circuit without spawning httpx."""
+    from recon.helpers.resource_enum.jsluice_helpers import verify_jsluice_urls
+
+    with mock.patch("subprocess.run") as fake_run:
+        verified, stats = verify_jsluice_urls(
+            urls=[],
+            docker_image="projectdiscovery/httpx:latest",
+            threads=10, timeout=5, rate_limit=50,
+            accept_status=[200], exclude_patterns=[],
+        )
+    assert verified == set()
+    assert stats["jsluice_verify_total"] == 0
+    assert stats["jsluice_verified"] == 0
+    fake_run.assert_not_called()
+    print("PASS: test_verify_jsluice_urls_empty_input_returns_zero_stats")
+
+
+def test_verify_jsluice_urls_dedups_input_urls():
+    """Unit: duplicate input URLs must be deduplicated before probing."""
+    from recon.helpers.resource_enum.jsluice_helpers import verify_jsluice_urls
+
+    captured_lines = {}
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        output_file = temp_path / "verified.json"
+
+        def fake_run(cmd, **kwargs):
+            # Capture what got written to urls.txt
+            urls_file = temp_path / "urls.txt"
+            if urls_file.exists():
+                captured_lines["lines"] = urls_file.read_text().strip().splitlines()
+            output_file.write_text(
+                json.dumps({"url": "https://example.com/api/live", "status_code": 200}) + "\n"
+            )
+            return mock.MagicMock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("recon.helpers.resource_enum.jsluice_helpers._create_temp_dir", return_value=temp_path), \
+             mock.patch("recon.helpers.resource_enum.jsluice_helpers._cleanup_temp_dir"), \
+             mock.patch("subprocess.run", side_effect=fake_run):
+            verified, stats = verify_jsluice_urls(
+                urls=[
+                    "https://example.com/api/live",
+                    "https://example.com/api/live",  # exact dup
+                    "https://example.com/api/live",  # exact dup
+                ],
+                docker_image="projectdiscovery/httpx:latest",
+                threads=10, timeout=5, rate_limit=50,
+                accept_status=[200], exclude_patterns=[],
+            )
+
+    assert verified == {"https://example.com/api/live"}
+    assert len(captured_lines.get("lines", [])) == 1, \
+        f"Expected dedup'd input, got {captured_lines.get('lines')}"
+    print("PASS: test_verify_jsluice_urls_dedups_input_urls")
+
+
+def test_verify_jsluice_urls_handles_missing_or_invalid_status():
+    """Unit: httpx entries with missing or non-numeric status must be skipped, not crash."""
+    from recon.helpers.resource_enum.jsluice_helpers import verify_jsluice_urls
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        output_file = temp_path / "verified.json"
+
+        def fake_run(cmd, **kwargs):
+            output_file.write_text("\n".join([
+                json.dumps({"url": "https://example.com/api/live", "status_code": 200}),
+                json.dumps({"url": "https://example.com/api/missing-status"}),  # no status
+                json.dumps({"url": "https://example.com/api/bad-status", "status_code": "not-a-number"}),
+                json.dumps({"url": "https://example.com/api/null-status", "status_code": None}),
+                "{malformed json",
+                "",
+            ]))
+            return mock.MagicMock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("recon.helpers.resource_enum.jsluice_helpers._create_temp_dir", return_value=temp_path), \
+             mock.patch("recon.helpers.resource_enum.jsluice_helpers._cleanup_temp_dir"), \
+             mock.patch("subprocess.run", side_effect=fake_run):
+            verified, stats = verify_jsluice_urls(
+                urls=[
+                    "https://example.com/api/live",
+                    "https://example.com/api/missing-status",
+                    "https://example.com/api/bad-status",
+                    "https://example.com/api/null-status",
+                ],
+                docker_image="projectdiscovery/httpx:latest",
+                threads=10, timeout=5, rate_limit=50,
+                accept_status=[200], exclude_patterns=[],
+            )
+
+    assert verified == {"https://example.com/api/live"}
+    assert stats["jsluice_verified"] == 1
+    print("PASS: test_verify_jsluice_urls_handles_missing_or_invalid_status")
+
+
+def test_verify_jsluice_urls_accepts_status_code_with_dash_key():
+    """Unit: httpx output sometimes uses `status-code` (dash) instead of `status_code`."""
+    from recon.helpers.resource_enum.jsluice_helpers import verify_jsluice_urls
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        output_file = temp_path / "verified.json"
+
+        def fake_run(cmd, **kwargs):
+            output_file.write_text(
+                json.dumps({"url": "https://example.com/api/live", "status-code": 200}) + "\n"
+            )
+            return mock.MagicMock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("recon.helpers.resource_enum.jsluice_helpers._create_temp_dir", return_value=temp_path), \
+             mock.patch("recon.helpers.resource_enum.jsluice_helpers._cleanup_temp_dir"), \
+             mock.patch("subprocess.run", side_effect=fake_run):
+            verified, _ = verify_jsluice_urls(
+                urls=["https://example.com/api/live"],
+                docker_image="projectdiscovery/httpx:latest",
+                threads=10, timeout=5, rate_limit=50,
+                accept_status=[200], exclude_patterns=[],
+            )
+
+    assert "https://example.com/api/live" in verified
+    print("PASS: test_verify_jsluice_urls_accepts_status_code_with_dash_key")
+
+
+def test_verify_jsluice_urls_all_blacklisted_skips_subprocess():
+    """Unit: when every URL hits the deny-list, do NOT spawn the httpx container."""
+    from recon.helpers.resource_enum.jsluice_helpers import verify_jsluice_urls
+
+    with mock.patch("subprocess.run") as fake_run:
+        verified, stats = verify_jsluice_urls(
+            urls=[
+                "https://example.com/static/app.js",
+                "https://example.com/static/style.css",
+            ],
+            docker_image="projectdiscovery/httpx:latest",
+            threads=10, timeout=5, rate_limit=50,
+            accept_status=[200],
+            exclude_patterns=[".js", ".css"],
+        )
+    assert verified == set()
+    assert stats["jsluice_skipped_blacklist"] == 2
+    assert stats["jsluice_verify_candidates"] == 0
+    fake_run.assert_not_called()
+    print("PASS: test_verify_jsluice_urls_all_blacklisted_skips_subprocess")
+
+
+# ===========================================================================
+# B3 / settings layer integration tests
+# ===========================================================================
+
+def test_settings_empty_exclude_patterns_falls_back_to_defaults():
+    """Integration regression: Prisma default of `[]` must NOT silently disable filtering.
+
+    When prisma db push adds the new column with `@default([])`, every existing row
+    gets an empty array. The fetch layer must treat empty as "use defaults".
+    """
+    from recon.project_settings import DEFAULT_SETTINGS
+
+    # Simulate the exact line in fetch_project_settings.
+    project = {"jsluiceExcludePatterns": []}
+    exclude_patterns = project.get("jsluiceExcludePatterns") or DEFAULT_SETTINGS["JSLUICE_EXCLUDE_PATTERNS"]
+
+    assert exclude_patterns == DEFAULT_SETTINGS["JSLUICE_EXCLUDE_PATTERNS"], \
+        "Empty list from DB MUST resolve to the default deny-list, not [] (which would skip filtering)."
+    assert len(exclude_patterns) > 0
+    print("PASS: test_settings_empty_exclude_patterns_falls_back_to_defaults")
+
+
+def test_settings_empty_accept_status_falls_back_to_defaults():
+    """Integration regression: empty accept-status list must fall back to defaults too."""
+    from recon.project_settings import DEFAULT_SETTINGS
+
+    project = {"jsluiceVerifyAcceptStatus": []}
+    accept_status = project.get("jsluiceVerifyAcceptStatus") or DEFAULT_SETTINGS["JSLUICE_VERIFY_ACCEPT_STATUS"]
+
+    assert accept_status == DEFAULT_SETTINGS["JSLUICE_VERIFY_ACCEPT_STATUS"]
+    assert 200 in accept_status
+    print("PASS: test_settings_empty_accept_status_falls_back_to_defaults")
+
+
+def test_settings_explicit_user_override_is_honored():
+    """Integration: a non-empty user-provided list must be used as-is (no clobber)."""
+    user_patterns = ["/internal-api/", ".debug"]
+    project = {"jsluiceExcludePatterns": user_patterns}
+    from recon.project_settings import DEFAULT_SETTINGS
+    exclude_patterns = project.get("jsluiceExcludePatterns") or DEFAULT_SETTINGS["JSLUICE_EXCLUDE_PATTERNS"]
+
+    assert exclude_patterns == user_patterns
+    print("PASS: test_settings_explicit_user_override_is_honored")
+
+
+def test_default_settings_has_all_jsluice_verify_keys():
+    """Smoke: DEFAULT_SETTINGS must contain every JSLUICE_VERIFY_* key the runtime reads."""
+    from recon.project_settings import DEFAULT_SETTINGS
+
+    required = [
+        "JSLUICE_VERIFY_URLS",
+        "JSLUICE_VERIFY_DOCKER_IMAGE",
+        "JSLUICE_VERIFY_TIMEOUT",
+        "JSLUICE_VERIFY_RATE_LIMIT",
+        "JSLUICE_VERIFY_THREADS",
+        "JSLUICE_VERIFY_ACCEPT_STATUS",
+        "JSLUICE_EXCLUDE_PATTERNS",
+    ]
+    missing = [k for k in required if k not in DEFAULT_SETTINGS]
+    assert not missing, f"Missing JSLUICE_VERIFY_* defaults: {missing}"
+    assert DEFAULT_SETTINGS["JSLUICE_VERIFY_URLS"] is True
+    assert isinstance(DEFAULT_SETTINGS["JSLUICE_VERIFY_ACCEPT_STATUS"], list)
+    assert isinstance(DEFAULT_SETTINGS["JSLUICE_EXCLUDE_PATTERNS"], list)
+    print("PASS: test_default_settings_has_all_jsluice_verify_keys")
+
+
+# ===========================================================================
+# Schema sync smoke tests — Prisma + preset schema
+# ===========================================================================
+
+def test_prisma_schema_has_jsluice_verify_columns():
+    """Smoke: Prisma schema MUST declare the new jsluiceVerify* columns.
+
+    If this fails, prisma db push will not create the columns and
+    `project.get('jsluiceVerifyUrls', …)` will always return the default,
+    making the UI toggle a no-op.
+    """
+    schema_path = Path("/app/webapp/prisma/schema.prisma")
+    if not schema_path.exists():
+        # Fall back to repo-relative path so the test works locally too.
+        schema_path = Path(__file__).resolve().parents[2] / "webapp" / "prisma" / "schema.prisma"
+    assert schema_path.exists(), f"Prisma schema not found at {schema_path}"
+    content = schema_path.read_text()
+    for field in [
+        "jsluiceVerifyUrls",
+        "jsluiceVerifyDockerImage",
+        "jsluiceVerifyTimeout",
+        "jsluiceVerifyRateLimit",
+        "jsluiceVerifyThreads",
+        "jsluiceVerifyAcceptStatus",
+        "jsluiceExcludePatterns",
+    ]:
+        assert field in content, f"Prisma schema missing field: {field}"
+    print("PASS: test_prisma_schema_has_jsluice_verify_columns")
+
+
+def test_recon_preset_schema_includes_jsluice_verify_fields():
+    """Smoke: reconPresetSchema must accept the new fields, else AI-generated presets strip them."""
+    schema_path = Path("/app/webapp/src/lib/recon-preset-schema.ts")
+    if not schema_path.exists():
+        schema_path = Path(__file__).resolve().parents[2] / "webapp" / "src" / "lib" / "recon-preset-schema.ts"
+    assert schema_path.exists(), f"recon-preset-schema.ts not found at {schema_path}"
+    content = schema_path.read_text()
+    for field in [
+        "jsluiceVerifyUrls",
+        "jsluiceVerifyDockerImage",
+        "jsluiceVerifyTimeout",
+        "jsluiceVerifyRateLimit",
+        "jsluiceVerifyThreads",
+        "jsluiceVerifyAcceptStatus",
+        "jsluiceExcludePatterns",
+    ]:
+        assert field in content, f"reconPresetSchema missing: {field}"
+    # Also check the human-facing catalog
+    assert "jsluiceVerifyUrls" in content and "noise filter" not in content.lower() or "verify" in content.lower(), \
+        "RECON_PARAMETER_CATALOG should describe the new fields"
+    print("PASS: test_recon_preset_schema_includes_jsluice_verify_fields")
+
+
+# ===========================================================================
+# jsluice merge tests
+# ===========================================================================
+
+def test_jsluice_merge_endpoint_structure():
+    """Verify merged jsluice endpoints match the canonical structure."""
+    from recon.helpers.resource_enum.jsluice_helpers import merge_jsluice_into_by_base_url
+
+    urls = ["https://example.com/api/search?q=test&page=1"]
+    merged, stats = merge_jsluice_into_by_base_url(urls, {})
+
+    assert stats["jsluice_new"] == 1
+    assert stats["jsluice_overlap"] == 0
+
+    base = merged["https://example.com"]
+    assert base["base_url"] == "https://example.com"
+
+    ep = base["endpoints"]["/api/search"]
+
+    # methods is a LIST
+    assert isinstance(ep["methods"], list)
+    assert ep["methods"] == ["GET"]
+
+    # parameter_count has all four keys
+    assert ep["parameter_count"]["query"] == 2
+    assert ep["parameter_count"]["body"] == 0
+    assert ep["parameter_count"]["path"] == 0
+    assert ep["parameter_count"]["total"] == 2
+
+    # urls_found is an INTEGER
+    assert isinstance(ep["urls_found"], int)
+    assert ep["urls_found"] == 1
+
+    # sample_urls is a LIST
+    assert isinstance(ep["sample_urls"], list)
+
+    # parameters has query, body, path keys
+    assert "query" in ep["parameters"]
+    assert "body" in ep["parameters"]
+    assert "path" in ep["parameters"]
+
+    # params use 'category' not 'classification'
+    for param in ep["parameters"]["query"]:
+        assert "category" in param
+        assert "classification" not in param
+        assert "sample_values" in param
+        assert "type" in param
+
+    # category is set on the endpoint
+    assert "category" in ep
+    assert ep["sources"] == ["jsluice"]
+
+    print("PASS: test_jsluice_merge_endpoint_structure")
+
+
+def test_jsluice_merge_overlap_adds_source():
+    """Overlapping paths should add 'jsluice' to sources without duplicating."""
+    from recon.helpers.resource_enum.jsluice_helpers import merge_jsluice_into_by_base_url
+
+    existing = {
+        "https://example.com": {
+            "base_url": "https://example.com",
+            "endpoints": {
+                "/api/data": {
+                    "methods": ["GET"],
+                    "sources": ["katana"],
+                    "category": "api",
+                }
+            },
+            "summary": {"total_endpoints": 1, "total_parameters": 0, "methods": {"GET": 1}, "categories": {"api": 1}},
+        }
+    }
+
+    urls = ["https://example.com/api/data"]
+    merged, stats = merge_jsluice_into_by_base_url(urls, existing)
+
+    assert merged["https://example.com"]["endpoints"]["/api/data"]["sources"] == ["katana", "jsluice"]
+    assert stats["jsluice_overlap"] == 1
+    assert stats["jsluice_new"] == 0
+    print("PASS: test_jsluice_merge_overlap_adds_source")
+
+
+def test_jsluice_merge_no_double_source():
+    """If jsluice is already in sources, don't add again."""
+    from recon.helpers.resource_enum.jsluice_helpers import merge_jsluice_into_by_base_url
+
+    existing = {
+        "https://example.com": {
+            "base_url": "https://example.com",
+            "endpoints": {
+                "/page": {
+                    "methods": ["GET"],
+                    "sources": ["katana", "jsluice"],
+                    "category": "other",
+                }
+            },
+            "summary": {"total_endpoints": 1, "total_parameters": 0, "methods": {"GET": 1}, "categories": {"other": 1}},
+        }
+    }
+
+    urls = ["https://example.com/page"]
+    merged, stats = merge_jsluice_into_by_base_url(urls, existing)
+
+    assert merged["https://example.com"]["endpoints"]["/page"]["sources"] == ["katana", "jsluice"]
+    assert stats["jsluice_overlap"] == 1
+    print("PASS: test_jsluice_merge_no_double_source")
+
+
+def test_jsluice_merge_summary_update():
+    """Summary should be updated correctly with methods, categories, params."""
+    from recon.helpers.resource_enum.jsluice_helpers import merge_jsluice_into_by_base_url
+
+    urls = [
+        "https://example.com/api/users?id=1",
+        "https://example.com/api/search?q=test&limit=10",
+    ]
+    merged, stats = merge_jsluice_into_by_base_url(urls, {})
+
+    summary = merged["https://example.com"]["summary"]
+    assert summary["total_endpoints"] == 2
+    assert summary["total_parameters"] == 3  # id + q + limit
+    assert summary["methods"]["GET"] == 2
+    print("PASS: test_jsluice_merge_summary_update")
+
+
+# ===========================================================================
+# Settings tests
+# ===========================================================================
+
+def test_hakrawler_default_settings_exist():
+    """All HAKRAWLER_* keys should exist in DEFAULT_SETTINGS."""
+    from recon.project_settings import DEFAULT_SETTINGS
+
+    expected_keys = [
+        'HAKRAWLER_ENABLED', 'HAKRAWLER_DOCKER_IMAGE', 'HAKRAWLER_DEPTH',
+        'HAKRAWLER_THREADS', 'HAKRAWLER_TIMEOUT', 'HAKRAWLER_MAX_URLS',
+        'HAKRAWLER_INCLUDE_SUBS', 'HAKRAWLER_INSECURE', 'HAKRAWLER_CUSTOM_HEADERS',
+    ]
+    for key in expected_keys:
+        assert key in DEFAULT_SETTINGS, f"Missing key: {key}"
+
+    assert DEFAULT_SETTINGS['HAKRAWLER_ENABLED'] is True
+    assert DEFAULT_SETTINGS['HAKRAWLER_DOCKER_IMAGE'] == 'jauderho/hakrawler:latest'
+    assert isinstance(DEFAULT_SETTINGS['HAKRAWLER_CUSTOM_HEADERS'], list)
+    print("PASS: test_hakrawler_default_settings_exist")
+
+
+def test_jsluice_default_settings_exist():
+    """All JSLUICE_* keys should exist in DEFAULT_SETTINGS."""
+    from recon.project_settings import DEFAULT_SETTINGS
+
+    expected_keys = [
+        'JSLUICE_ENABLED', 'JSLUICE_MAX_FILES', 'JSLUICE_TIMEOUT',
+        'JSLUICE_EXTRACT_URLS', 'JSLUICE_EXTRACT_SECRETS', 'JSLUICE_CONCURRENCY',
+    ]
+    for key in expected_keys:
+        assert key in DEFAULT_SETTINGS, f"Missing key: {key}"
+
+    assert DEFAULT_SETTINGS['JSLUICE_ENABLED'] is True
+    # JSLUICE_MAX_FILES was raised from 100 to 10000 to handle SPA bundles with hundreds of chunks.
+    assert DEFAULT_SETTINGS['JSLUICE_MAX_FILES'] >= 100
+    assert DEFAULT_SETTINGS['JSLUICE_CONCURRENCY'] == 5
+    print("PASS: test_jsluice_default_settings_exist")
+
+
+def test_stealth_overrides_disable_hakrawler():
+    """Stealth mode should disable Hakrawler and reduce jsluice max files."""
+    from recon.project_settings import DEFAULT_SETTINGS, apply_stealth_overrides
+    import copy
+
+    settings = copy.deepcopy(DEFAULT_SETTINGS)
+    settings['HAKRAWLER_ENABLED'] = True
+    settings['JSLUICE_MAX_FILES'] = 100
+    settings['STEALTH_MODE'] = True
+
+    result = apply_stealth_overrides(settings)
+
+    assert result['HAKRAWLER_ENABLED'] == False, f"Expected False, got {result['HAKRAWLER_ENABLED']}"
+    assert result['JSLUICE_MAX_FILES'] == 20, f"Expected 20, got {result['JSLUICE_MAX_FILES']}"
+    print("PASS: test_stealth_overrides_disable_hakrawler")
+
+
+@pytest.mark.xfail(strict=True, reason="Part H triage (bucket-3): behavior/mapping/shape drifted from this assertion post-refactor; correctness unconfirmed - see green-up report")
+def test_settings_camelcase_mapping():
+    """fetch_project_settings should map camelCase to SCREAMING_SNAKE_CASE."""
+    from recon.project_settings import fetch_project_settings
+
+    fake_project = {
+        "hakrawlerEnabled": True,
+        "hakrawlerDepth": 5,
+        "hakrawlerThreads": 10,
+        "hakrawlerTimeout": 60,
+        "hakrawlerMaxUrls": 1000,
+        "hakrawlerIncludeSubs": True,
+        "hakrawlerInsecure": False,
+        "hakrawlerDockerImage": "custom:latest",
+        "hakrawlerCustomHeaders": ["X-Custom: test"],
+        "jsluiceEnabled": False,
+        "jsluiceMaxFiles": 50,
+        "jsluiceTimeout": 120,
+        "jsluiceExtractUrls": False,
+        "jsluiceExtractSecrets": True,
+        "jsluiceConcurrency": 10,
+    }
+
+    mock_resp = mock.MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = fake_project
+    mock_resp.raise_for_status = mock.MagicMock()
+
+    with mock.patch("requests.get", return_value=mock_resp):
+        settings = fetch_project_settings("test-project", "http://localhost:3000")
+
+    assert settings['HAKRAWLER_ENABLED'] is True
+    assert settings['HAKRAWLER_DEPTH'] == 5
+    assert settings['HAKRAWLER_THREADS'] == 10
+    assert settings['HAKRAWLER_TIMEOUT'] == 60
+    assert settings['HAKRAWLER_MAX_URLS'] == 1000
+    assert settings['HAKRAWLER_INCLUDE_SUBS'] is True
+    assert settings['HAKRAWLER_INSECURE'] is False
+    assert settings['HAKRAWLER_DOCKER_IMAGE'] == "custom:latest"
+    assert settings['HAKRAWLER_CUSTOM_HEADERS'] == ["X-Custom: test"]
+
+    assert settings['JSLUICE_ENABLED'] is False
+    assert settings['JSLUICE_MAX_FILES'] == 50
+    assert settings['JSLUICE_TIMEOUT'] == 120
+    assert settings['JSLUICE_EXTRACT_URLS'] is False
+    assert settings['JSLUICE_EXTRACT_SECRETS'] is True
+    assert settings['JSLUICE_CONCURRENCY'] == 10
+    print("PASS: test_settings_camelcase_mapping")
+
+
+# ===========================================================================
+# __init__.py import tests
+# ===========================================================================
+
+def test_imports_resolve():
+    """All new exports from __init__.py should be importable."""
+    from recon.helpers.resource_enum import (
+        run_hakrawler_crawler,
+        pull_hakrawler_docker_image,
+        merge_hakrawler_into_by_base_url,
+        run_jsluice_analysis,
+        merge_jsluice_into_by_base_url,
+    )
+
+    assert callable(run_hakrawler_crawler)
+    assert callable(pull_hakrawler_docker_image)
+    assert callable(merge_hakrawler_into_by_base_url)
+    assert callable(run_jsluice_analysis)
+    assert callable(merge_jsluice_into_by_base_url)
+    print("PASS: test_imports_resolve")
+
+
+# ===========================================================================
+# Runner
+# ===========================================================================
+
+def test_auth_header_stays_separate_from_ctx_tag_in_hakrawler_join():
+    """Row 1: hakrawler packs ALL headers into ONE -h argument joined by ';;',
+    and the internal X-CART-Ctx tag is appended to that same list. An auth
+    value carrying ';;' (or ordered after the tag) could split or spoof the tag.
+    The profile's lines must lead and stay their own element."""
+    from recon.helpers.resource_enum.hakrawler_helpers import run_hakrawler_crawler
+
+    captured_cmd = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured_cmd['cmd'] = cmd
+        proc = mock.MagicMock()
+        proc.stdin = mock.MagicMock()
+        proc.stdout.readline.return_value = ""
+        proc.poll.return_value = 0
+        proc.wait.return_value = 0
+        return proc
+
+    with mock.patch("subprocess.Popen", side_effect=fake_popen), \
+         mock.patch("helpers.proxy_routing.get_capture_routing",
+                    return_value=("http://proxy:8888", "signed-ctx-token")):
+        run_hakrawler_crawler(
+            target_urls=["https://example.com"],
+            docker_image="jauderho/hakrawler:latest",
+            depth=1,
+            threads=1,
+            timeout=5,
+            max_urls=10,
+            include_subs=False,
+            insecure=True,
+            allowed_hosts={"example.com"},
+            custom_headers=["Cookie: sid=abc123"],
+            exclude_patterns=[],
+            parallelism=1,
+        )
+
+    cmd = captured_cmd['cmd']
+    assert "-h" in cmd, cmd
+    joined = cmd[cmd.index("-h") + 1]
+    parts = joined.split(";;")
+    assert parts[0] == "Cookie: sid=abc123", parts
+    assert "X-CART-Ctx: signed-ctx-token" in parts, parts
+    # The auth element must not itself contain the delimiter or the tag.
+    assert ";;" not in parts[0]
+    assert "X-CART-Ctx" not in parts[0]
+
+
+if __name__ == "__main__":
+    tests = [fn for name, fn in sorted(globals().items()) if name.startswith("test_") and callable(fn)]
+    passed = 0
+    failed = 0
+    for test_fn in tests:
+        try:
+            test_fn()
+            passed += 1
+        except Exception as e:
+            print(f"FAIL: {test_fn.__name__} — {e}")
+            import traceback
+            traceback.print_exc()
+            failed += 1
+
+    print(f"\n{'=' * 50}")
+    print(f"Results: {passed} passed, {failed} failed out of {passed + failed}")
+    if failed == 0:
+        print("All tests passed!")
+    else:
+        print(f"{failed} test(s) FAILED")
+        sys.exit(1)

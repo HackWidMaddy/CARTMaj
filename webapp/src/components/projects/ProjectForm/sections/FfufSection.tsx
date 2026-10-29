@@ -1,0 +1,581 @@
+'use client'
+
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { ChevronDown, FolderSearch, Upload, X, Loader2, Play } from 'lucide-react'
+import { Toggle, WikiInfoButton } from '@/components/ui'
+import type { Project } from '@prisma/client'
+import styles from '../ProjectForm.module.css'
+import { NodeInfoTooltip } from '../NodeInfoTooltip'
+import { FileImportButton } from '../FileImportButton'
+import { AiToggleLabel } from '../AiToggleLabel'
+import { JevEngineControl } from '../JevEngineControl'
+import { useHasJevProvider } from '@/hooks/useHasJevProvider'
+
+type FormData = Omit<Project, 'id' | 'userId' | 'createdAt' | 'updatedAt' | 'user'>
+
+const BUILTIN_WORDLISTS = [
+  { name: 'common.txt', path: '/usr/share/seclists/Discovery/Web-Content/common.txt' },
+  { name: 'directory-list-2.3-small.txt', path: '/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt' },
+  { name: 'raft-medium-directories.txt', path: '/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt' },
+]
+
+const DEFAULT_WORDLIST = BUILTIN_WORDLISTS[0].path
+
+interface CustomWordlist {
+  name: string
+  path: string
+  size: number
+}
+
+interface FfufSectionProps {
+  data: FormData
+  updateField: <K extends keyof FormData>(field: K, value: FormData[K]) => void
+  projectId?: string
+  mode: 'create' | 'edit'
+  onRun?: () => void
+}
+
+export function FfufSection({ data, updateField, projectId, mode, onRun }: FfufSectionProps) {
+  const jevStatus = useHasJevProvider()
+  const [isOpen, setIsOpen] = useState(true)
+  const [customWordlists, setCustomWordlists] = useState<CustomWordlist[]>([])
+  const [isUploading, setIsUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const canUpload = !!projectId
+
+  const fetchCustomWordlists = useCallback(async () => {
+    if (!projectId) return
+    try {
+      const res = await fetch(`/api/projects/${projectId}/wordlists`)
+      if (res.ok) {
+        const json = await res.json()
+        setCustomWordlists(json.wordlists || [])
+      }
+    } catch {
+      // Silently fail -- custom wordlists just won't appear
+    }
+  }, [projectId])
+
+  useEffect(() => {
+    fetchCustomWordlists()
+  }, [fetchCustomWordlists])
+
+  const handleUpload = async (file: File) => {
+    if (!projectId) return
+    setIsUploading(true)
+    setUploadError(null)
+
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+
+      const res = await fetch(`/api/projects/${projectId}/wordlists`, {
+        method: 'POST',
+        body: formData,
+      })
+
+      const result = await res.json()
+
+      if (!res.ok) {
+        setUploadError(result.error || 'Upload failed')
+        return
+      }
+
+      setCustomWordlists(result.wordlists || [])
+      if (result.uploaded?.path) {
+        updateField('ffufWordlist', result.uploaded.path)
+      }
+    } catch {
+      setUploadError('Upload failed. Please try again.')
+    } finally {
+      setIsUploading(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  const handleDelete = async (name: string) => {
+    if (!projectId) return
+
+    try {
+      const res = await fetch(
+        `/api/projects/${projectId}/wordlists?name=${encodeURIComponent(name)}`,
+        { method: 'DELETE' }
+      )
+
+      if (res.ok) {
+        const result = await res.json()
+        setCustomWordlists(result.wordlists || [])
+
+        const deletedPath = `/app/recon/wordlists/${projectId}/${name}`
+        if (data.ffufWordlist === deletedPath) {
+          updateField('ffufWordlist', DEFAULT_WORDLIST)
+        }
+      }
+    } catch {
+      // Silently fail
+    }
+  }
+
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  }
+
+  return (
+    <div className={`${styles.section} ${styles.formSkin}`}>
+      <div className={styles.sectionHeader} onClick={() => setIsOpen(!isOpen)}>
+        <h2 className={styles.sectionTitle}>
+          <FolderSearch size={16} />
+          FFuf Directory Fuzzer
+          <NodeInfoTooltip section="Ffuf" />
+          <WikiInfoButton target="Ffuf" />
+          <span className={styles.badgeActive}>Active</span>
+        </h2>
+        <div className={styles.sectionHeaderRight}>
+          {onRun && data.ffufEnabled && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onRun() }}
+              className={styles.runPartialButton}
+              title="Run FFuf"
+            >
+              <Play size={10} /> Run partial recon
+            </button>
+          )}
+          <div onClick={(e) => e.stopPropagation()}>
+            <Toggle
+              checked={data.ffufEnabled}
+              onChange={(checked) => updateField('ffufEnabled', checked)}
+            />
+          </div>
+          <ChevronDown
+            size={16}
+            className={`${styles.sectionIcon} ${isOpen ? styles.sectionIconOpen : ''}`}
+          />
+        </div>
+      </div>
+
+      {isOpen && (
+        <div className={styles.sectionContent}>
+          <p className={styles.sectionDescription}>
+            Fast directory and endpoint fuzzer that brute-forces common paths using wordlists. Discovers hidden content (admin panels, backup files, configs, undocumented APIs) that crawlers cannot find. Runs after crawlers complete and can target discovered base paths for smart fuzzing.
+          </p>
+
+          {data.ffufEnabled && (
+            <>
+              <div className={styles.fieldRow}>
+                <div className={styles.fieldGroup}>
+                  <label className={styles.fieldLabel}>Threads</label>
+                  <input
+                    type="number"
+                    className="textInput"
+                    value={data.ffufThreads}
+                    onChange={(e) => updateField('ffufThreads', parseInt(e.target.value) || 40)}
+                    min={1}
+                    max={200}
+                  />
+                  <span className={styles.fieldHint}>Concurrent request threads</span>
+                </div>
+                <div className={styles.fieldGroup}>
+                  <label className={styles.fieldLabel}>Rate Limit (req/s)</label>
+                  <input
+                    type="number"
+                    className="textInput"
+                    value={data.ffufRate}
+                    onChange={(e) => updateField('ffufRate', parseInt(e.target.value) || 0)}
+                    min={0}
+                  />
+                  <span className={styles.fieldHint}>Max requests per second (0 = unlimited)</span>
+                </div>
+              </div>
+
+              <div className={styles.fieldRow}>
+                <div className={styles.fieldGroup}>
+                  <label className={styles.fieldLabel}>Parallelism</label>
+                  <input
+                    type="number"
+                    className="textInput"
+                    value={data.ffufParallelism ?? 20}
+                    onChange={(e) => updateField('ffufParallelism', parseInt(e.target.value) || 20)}
+                    min={1}
+                    max={50}
+                  />
+                  <span className={styles.fieldHint}>Number of targets to fuzz in parallel</span>
+                </div>
+              </div>
+
+              <div className={styles.fieldRow}>
+                <div className={styles.fieldGroup}>
+                  <label className={styles.fieldLabel}>Request Timeout (s)</label>
+                  <input
+                    type="number"
+                    className="textInput"
+                    value={data.ffufTimeout}
+                    onChange={(e) => updateField('ffufTimeout', parseInt(e.target.value) || 10)}
+                    min={1}
+                  />
+                  <span className={styles.fieldHint}>Per-request timeout</span>
+                </div>
+                <div className={styles.fieldGroup}>
+                  <label className={styles.fieldLabel}>Max Time (s)</label>
+                  <input
+                    type="number"
+                    className="textInput"
+                    value={data.ffufMaxTime}
+                    onChange={(e) => updateField('ffufMaxTime', parseInt(e.target.value) || 1800)}
+                    min={60}
+                  />
+                  <span className={styles.fieldHint}>Maximum total execution time per target</span>
+                </div>
+              </div>
+
+              <div className={styles.fieldGroup}>
+                <label className={styles.fieldLabel}>
+                  Wordlist <span className={styles.itemMeta} style={{ fontWeight: 400 }}>(built-in or upload)</span>
+                </label>
+                <div
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 'var(--space-2)',
+                    alignItems: 'stretch',
+                  }}
+                >
+                  <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+                    <select
+                      className="select"
+                      value={data.ffufWordlist}
+                      onChange={(e) => updateField('ffufWordlist', e.target.value || DEFAULT_WORDLIST)}
+                      aria-label="FFuf wordlist"
+                    >
+                      <optgroup label="Built-in (SecLists in recon image)">
+                        {BUILTIN_WORDLISTS.map((wl) => (
+                          <option key={wl.path} value={wl.path}>
+                            {wl.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                      {canUpload && customWordlists.length === 0 && (
+                        <optgroup label="Your custom lists">
+                          <option disabled value="__ffuf_no_custom_yet__">
+                            (None yet - use Upload .txt →)
+                          </option>
+                        </optgroup>
+                      )}
+                      {customWordlists.length > 0 && (
+                        <optgroup label="Your custom lists">
+                          {customWordlists.map((wl) => (
+                            <option key={wl.path} value={wl.path}>
+                              {wl.name} ({formatSize(wl.size)})
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                    </select>
+                  </div>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".txt,text/plain"
+                    style={{ display: 'none' }}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0]
+                      if (file) handleUpload(file)
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="secondaryButton"
+                    style={{
+                      whiteSpace: 'nowrap',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      flex: '0 0 auto',
+                      alignSelf: 'flex-start',
+                    }}
+                    onClick={() => (canUpload ? fileInputRef.current?.click() : undefined)}
+                    disabled={isUploading || !canUpload}
+                    title={
+                      !canUpload
+                        ? 'Save the project first to upload custom wordlists'
+                        : 'Upload a .txt wordlist - it will appear under “Your custom lists” in the menu'
+                    }
+                  >
+                    {isUploading ? <Loader2 size={14} className={styles.spinner} /> : <Upload size={14} />}
+                    {isUploading ? 'Uploading...' : 'Upload .txt'}
+                  </button>
+                </div>
+                {uploadError && (
+                  <span className={styles.inlineError}>{uploadError}</span>
+                )}
+                {!uploadError && !canUpload && (
+                  <span className={styles.fieldHint}>
+                    Save the project first; then you can upload .txt payload lists (max 50MB) and select them in the menu
+                    above.
+                  </span>
+                )}
+                {!uploadError && canUpload && (
+                  <span className={styles.fieldHint}>
+                    Custom files are <strong>not</strong> listed until you upload them. Click <strong>Upload .txt</strong>,
+                    then choose your file under <strong>Your custom lists</strong> in the dropdown.
+                  </span>
+                )}
+              </div>
+
+              {customWordlists.length > 0 && canUpload && (
+                <div className={styles.fieldGroup}>
+                  <label className={styles.fieldLabel}>Uploaded Wordlists</label>
+                  <div className={styles.itemList}>
+                    {customWordlists.map((wl) => (
+                      <div
+                        key={wl.name}
+                        className={`${styles.itemRow} ${data.ffufWordlist === wl.path ? styles.itemRowOn : ''}`}
+                      >
+                        <span>
+                          {wl.name}
+                          <span className={styles.itemMeta} style={{ marginLeft: 'var(--space-2)' }}>
+                            {formatSize(wl.size)}
+                          </span>
+                        </span>
+                        <button
+                          type="button"
+                          className={styles.removeButton}
+                          onClick={() => handleDelete(wl.name)}
+                          title={`Delete ${wl.name}`}
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className={styles.fieldRow}>
+                <div className={styles.fieldGroup}>
+                  <label className={styles.fieldLabel}>Match Status Codes</label>
+                  <div className={styles.fileImportWrap}>
+                    <input
+                      type="text"
+                      className="textInput"
+                      value={(data.ffufMatchCodes ?? []).join(', ')}
+                      onChange={(e) => updateField('ffufMatchCodes', e.target.value.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n)))}
+                    />
+                    <FileImportButton
+                      fieldName="status codes"
+                      validator={(t) => /^\d+$/.test(t)}
+                      onImport={(values) => updateField('ffufMatchCodes', values.map(v => parseInt(v)).filter(n => !isNaN(n)))}
+                    />
+                  </div>
+                  <span className={styles.fieldHint}>Include these HTTP status codes (comma-separated)</span>
+                </div>
+                <div className={styles.fieldGroup}>
+                  <label className={styles.fieldLabel}>Filter Status Codes</label>
+                  <div className={styles.fileImportWrap}>
+                    <input
+                      type="text"
+                      className="textInput"
+                      value={(data.ffufFilterCodes ?? []).join(', ')}
+                      onChange={(e) => updateField('ffufFilterCodes', e.target.value.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n)))}
+                    />
+                    <FileImportButton
+                      fieldName="status codes"
+                      validator={(t) => /^\d+$/.test(t)}
+                      onImport={(values) => updateField('ffufFilterCodes', values.map(v => parseInt(v)).filter(n => !isNaN(n)))}
+                    />
+                  </div>
+                  <span className={styles.fieldHint}>Exclude these HTTP status codes (comma-separated)</span>
+                </div>
+              </div>
+
+              <div className={styles.fieldRow}>
+                <div className={styles.fieldGroup}>
+                  <label className={styles.fieldLabel}>Filter Response Size</label>
+                  <input
+                    type="text"
+                    className="textInput"
+                    value={data.ffufFilterSize}
+                    onChange={(e) => updateField('ffufFilterSize', e.target.value)}
+                    placeholder="e.g., 0 or 4242"
+                  />
+                  <span className={styles.fieldHint}>Exclude responses of this size (bytes). Useful for uniform error pages</span>
+                </div>
+                <div className={styles.fieldGroup}>
+                  <label className={styles.fieldLabel}>Extensions</label>
+                  <div className={styles.toggleRow} style={{ marginBottom: 'var(--space-2)', alignItems: 'center' }}>
+                    <AiToggleLabel
+                      label="Use AI for Extensions"
+                      tooltip={
+                        'AI picks file extensions per target based on server response headers ' +
+                        '(Server, X-Powered-By, X-AspNet-Version). When on, the static list below ' +
+                        'is ignored. Same toggle as in the Target tab AI panel: flipping it here ' +
+                        'flips it there. A per-fingerprint cache means N hosts behind the same ' +
+                        'stack collapse to one LLM call. ' +
+                        (!data.aiInPipeline ? 'Enable "AI in Pipeline" in the Target tab to use this.' : '')
+                      }
+                    />
+                    <Toggle
+                      checked={data.ffufAiExtensions}
+                      disabled={!data.aiInPipeline}
+                      onChange={(checked) => updateField('ffufAiExtensions', checked)}
+                    />
+                  </div>
+                  {data.ffufAiExtensions && (
+                    <div className={styles.toggleRow} style={{ marginBottom: 'var(--space-2)', alignItems: 'center', gap: 'var(--space-2)' }}>
+                      <span className={styles.fieldLabel}>Engine</span>
+                      <JevEngineControl
+                        value={data.ffufAiUseJev}
+                        enabled={data.aiInPipeline && data.ffufAiExtensions}
+                        jevStatus={jevStatus}
+                        onSelect={(useJev) => updateField('ffufAiUseJev', useJev)}
+                      />
+                    </div>
+                  )}
+                  <div className={styles.fileImportWrap}>
+                    <input
+                      type="text"
+                      className="textInput"
+                      value={(data.ffufExtensions ?? []).join(', ')}
+                      onChange={(e) => updateField('ffufExtensions', e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
+                      placeholder=".php, .bak, .env, .json"
+                      disabled={data.ffufAiExtensions}
+                      style={data.ffufAiExtensions ? { opacity: 0.5 } : undefined}
+                    />
+                    <FileImportButton
+                      fieldName="extensions"
+                      onImport={(values) => updateField('ffufExtensions', values)}
+                    />
+                  </div>
+                  <span className={styles.fieldHint}>
+                    {data.ffufAiExtensions
+                      ? 'Extensions chosen by AI per target. Static list above is ignored.'
+                      : 'File extensions to append to each word (comma-separated)'}
+                  </span>
+                </div>
+              </div>
+
+              <div className={styles.subSection}>
+                <h3 className={styles.subSectionTitle}>Options</h3>
+                <div className={styles.toggleRow}>
+                  <div>
+                    <span className={styles.toggleLabel}>Auto-Calibrate</span>
+                    <p className={styles.toggleDescription}>Automatically filter false positives based on response patterns</p>
+                  </div>
+                  <Toggle
+                    checked={data.ffufAutoCalibrate}
+                    onChange={(checked) => updateField('ffufAutoCalibrate', checked)}
+                  />
+                </div>
+                <div className={styles.toggleRow}>
+                  <div>
+                    <span className={styles.toggleLabel}>Smart Fuzz (Post-Crawler)</span>
+                    <p className={styles.toggleDescription}>Also fuzz under base paths discovered by crawlers (e.g., /api/v1/FUZZ)</p>
+                  </div>
+                  <Toggle
+                    checked={data.ffufSmartFuzz}
+                    onChange={(checked) => updateField('ffufSmartFuzz', checked)}
+                  />
+                </div>
+                {data.ffufSmartFuzz && (
+                  <div className={styles.fieldGroup} style={{ marginTop: '0.5rem' }}>
+                    <label className={styles.fieldLabel}>Smart-fuzz: max base paths</label>
+                    <input
+                      type="number"
+                      className="textInput"
+                      value={data.ffufSmartFuzzMaxBasePaths ?? 20}
+                      onChange={(e) => updateField('ffufSmartFuzzMaxBasePaths', parseInt(e.target.value) || 20)}
+                      min={1}
+                      max={50}
+                    />
+                    <span className={styles.fieldHint}>
+                      The full wordlist runs under each one, per target. A random sample is taken when crawlers find more
+                    </span>
+                    <div className={styles.toggleRow} style={{ marginTop: 'var(--space-2)', alignItems: 'center', gap: 'var(--space-2)' }}>
+                      <AiToggleLabel
+                        label="Rank directories with Jev"
+                        tooltip={
+                          'When crawlers find more base directories than the cap, Jev is asked per ' +
+                          'directory whether it is likely to hold sensitive, administrative or application ' +
+                          'content, and its best ones are fuzzed. The random pick is the fallback when Jev ' +
+                          'is unavailable. Same switch as in the Target tab AI panel. ' +
+                          (!data.aiInPipeline ? 'Enable "AI in Pipeline" in the Target tab to use this.' : '')
+                        }
+                      />
+                      <JevEngineControl
+                        variant="jevOnly"
+                        value={data.ffufJevBasePaths}
+                        enabled={data.aiInPipeline}
+                        jevStatus={jevStatus}
+                        disabledHint='Enable "AI in Pipeline" in the Target tab to turn this on.'
+                        onSelect={(on) => updateField('ffufJevBasePaths', on)}
+                      />
+                    </div>
+                  </div>
+                )}
+                <div className={styles.toggleRow}>
+                  <div>
+                    <span className={styles.toggleLabel}>Follow Redirects</span>
+                    <p className={styles.toggleDescription}>Follow HTTP redirects. May lead to out-of-scope domains (filtered post-hoc)</p>
+                  </div>
+                  <Toggle
+                    checked={data.ffufFollowRedirects}
+                    onChange={(checked) => updateField('ffufFollowRedirects', checked)}
+                  />
+                </div>
+                <div className={styles.toggleRow}>
+                  <div>
+                    <span className={styles.toggleLabel}>Recursion</span>
+                    <p className={styles.toggleDescription}>Recursively fuzz discovered directories</p>
+                  </div>
+                  <Toggle
+                    checked={data.ffufRecursion}
+                    onChange={(checked) => updateField('ffufRecursion', checked)}
+                  />
+                </div>
+                {data.ffufRecursion && (
+                  <div className={styles.fieldGroup} style={{ marginTop: '0.5rem' }}>
+                    <label className={styles.fieldLabel}>Recursion Depth</label>
+                    <input
+                      type="number"
+                      className="textInput"
+                      value={data.ffufRecursionDepth}
+                      onChange={(e) => updateField('ffufRecursionDepth', parseInt(e.target.value) || 2)}
+                      min={1}
+                      max={5}
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className={styles.subSection}>
+                <h3 className={styles.subSectionTitle}>Custom Headers</h3>
+                <div className={styles.fieldGroup}>
+                  <label className={styles.fieldLabel}>Request Headers</label>
+                  <div className={styles.fileImportWrap}>
+                    <textarea
+                      className="textarea"
+                      value={(data.ffufCustomHeaders ?? []).join('\n')}
+                      onChange={(e) => updateField('ffufCustomHeaders', e.target.value.split('\n').filter(Boolean))}
+                      placeholder="Cookie: session=abc123&#10;Authorization: Bearer token..."
+                      rows={3}
+                    />
+                    <FileImportButton
+                      variant="textarea"
+                      fieldName="headers"
+                      onImport={(values) => updateField('ffufCustomHeaders', values)}
+                    />
+                  </div>
+                  <span className={styles.fieldHint}>One header per line. Sent with every request</span>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}

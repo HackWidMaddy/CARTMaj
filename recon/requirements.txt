@@ -1,0 +1,55 @@
+# CART Reconnaissance Module - Python Dependencies
+# ====================================================
+# Install with: pip install -r requirements.txt
+
+# Core dependencies
+python-whois==0.9.6          # WHOIS lookups
+dnspython==2.8.0             # DNS resolution
+publicsuffixlist==1.1.0.20261010  # Public Suffix List; bump with webapp's tldts (README.DEV.md 5.8); wheel sha256 c92763e6b3982c850e9047eb95aa864753ec533f761b18bae4d04226d5e12f1d
+requests>=2.31.0             # HTTP requests
+urllib3>=2.0.0               # HTTP library
+
+# GitHub secret hunting
+PyGithub>=2.1.1              # GitHub API client
+
+# Subdomain discovery
+# T17: pinned to an immutable commit (was the mutable default-branch HEAD).
+knock-subdomains @ git+https://github.com/guelfoweb/knock.git@da43fdd2399f9ca5a39229cb8ba3e51249f53e30
+
+# Environment configuration
+python-dotenv>=1.0.0         # Load .env files
+
+# Technology detection (Wappalyzer enhancement)
+python-Wappalyzer>=0.3.0     # Technology fingerprinting
+setuptools>=65.0.0           # Required for python-Wappalyzer (pkg_resources)
+
+# Graph database integration (optional - for Neo4j updates)
+neo4j>=5.0.0                 # Neo4j graph database driver
+
+# HTTP parameter discovery
+arjun>=2.2.7                 # Hidden parameter discovery
+paramspider @ git+https://github.com/devanshbatham/ParamSpider.git@c44bdaae54789b237028e309b603d1aa5ad52e5e  # T17: pinned commit. Passive URL parameter mining from Wayback Machine
+
+# MITRE enrichment
+# (uses requests - already included above)
+
+# AI surface recon — favicon hashing for AI-frontend product detection
+mmh3>=4.1.0                  # MurmurHash3, used by ai_signal_catalog favicon lookup
+
+# AI surface recon (central module) — protocol-aware AI/LLM/MCP fingerprinting.
+# Imported lazily inside ai_surface_recon.py so a missing dep degrades that one
+# module instead of crashing the whole recon job. Rebuild the recon image after
+# adding these: docker compose --profile tools build recon
+PyYAML>=6.0                  # Parse vendored Julius probe-pack YAML (probe_pack_engine); MIT
+mcp>=1.27.0                  # Official Model Context Protocol SDK (initialize + tools/list); MIT
+yara-python>=4.5.0          # Static MCP tool-poisoning rules (deterministic, no-LLM); Apache-2.0
+prance>=23.6.21.0           # OpenAPI/Swagger $ref-resolving parser; MIT
+openapi-spec-validator>=0.7.1,<0.8  # prance validation backend (OpenAPI 2.0/3.0/3.1); Apache-2.0. Pinned <0.8 to match prance's osv extra (~=0.7.1); newer osv breaks prance's validator import.
+jq>=1.6.0                    # jq.py — Julius models.extract expressions; BSD-2 (bundles libjq)
+
+# Test toolchain (baked so `CART.sh test` needs no runtime install).
+# Kept in sync with the root requirements-test.txt. See docs/readmes/README.TESTING.md.
+pytest>=8
+pytest-cov>=5
+pytest-xdist>=3
+pytest-asyncio>=0.23

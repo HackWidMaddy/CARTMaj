@@ -1,0 +1,5 @@
+# giskard adapter — installed into /opt/venv-giskard (isolated: conflicts with
+# garak/pyrit). Pinned: adapters/giskard/TOOL_API.md + the runner/parser target it.
+# The [llm] extra pulls litellm, which giskard's LLM scan REQUIRES to route
+# "ollama/..." models to the local judge (zero external egress).
+giskard[llm]==2.19.1

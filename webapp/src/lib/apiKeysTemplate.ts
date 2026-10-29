@@ -1,0 +1,343 @@
+/**
+ * API Keys template generation, validation, and import logic.
+ *
+ * The template is filled in by a human in an editor, so its field names are the
+ * LABELS the API Keys tab shows ("Secret Multiscanner GitHub Token"), not the
+ * database columns behind them ("trufflehogGithubToken"). A column name leaks an
+ * internal spelling - and an old product name - into a file an operator has to
+ * read. apiKeysTemplate.test.ts reads the settings page and the credential
+ * catalogue and fails if any label here drifts from what is rendered.
+ *
+ * Import still accepts the legacy column names, so a template downloaded before
+ * this change keeps working.
+ *
+ * All functions are pure (no side effects) so they can be unit-tested
+ * without a DOM or React environment.
+ */
+
+import { credentialField } from './credentialFields'
+import { ROTATION_TOOL_NAMES } from './rotationTools'
+
+const MAX_FILE_SIZE = 100 * 1024 // 100 KB
+
+export const ALLOWED_KEY_FIELDS = [
+  // GitHub & Supply Chain
+  'githubAccessToken',
+  'supplyChainGithubToken',
+  'githubEnterpriseHost',
+  'githubEnterpriseToken',
+  // Search, OSINT and vulnerability data
+  'tavilyApiKey',
+  'shodanApiKey',
+  'serpApiKey',
+  'wpscanApiToken',
+  'pdcpApiKey',
+  'nvdApiKey',
+  'vulnersApiKey',
+  'urlscanApiKey',
+  'censysApiToken',
+  'censysOrgId',
+  'fofaApiKey',
+  'otxApiKey',
+  'netlasApiKey',
+  'virusTotalApiKey',
+  'zoomEyeApiKey',
+  'criminalIpApiKey',
+  'securitytrailsApiKey',
+  'viewdnsApiKey',
+  'quakeApiKey',
+  'hunterApiKey',
+  'publicWwwApiKey',
+  'hunterHowApiKey',
+  'googleApiKey',
+  'googleApiCx',
+  'onypheApiKey',
+  'driftnetApiKey',
+  // Secret Multiscanner, one key per source. A field missing here is silently
+  // DROPPED on import, so offline key entry would appear to work and then leave
+  // the scan blocked on a key the operator believes they set.
+  'trufflehogGithubToken',
+  'trufflehogGitlabToken',
+  'trufflehogDockerToken',
+  'trufflehogHuggingfaceToken',
+  'trufflehogAwsAccessKeyId',
+  'trufflehogAwsSecretKey',
+  'trufflehogAwsSessionToken',
+  'trufflehogGcpServiceAccount',
+  'trufflehogPostmanToken',
+  'trufflehogJenkinsUsername',
+  'trufflehogJenkinsPassword',
+  'trufflehogElasticUsername',
+  'trufflehogElasticPassword',
+  'trufflehogElasticApiKey',
+  'trufflehogElasticServiceToken',
+  'trufflehogCircleciToken',
+  'trufflehogTravisciToken',
+  'trufflehogGitUsername',
+  'trufflehogGitToken',
+] as const
+
+export const ALLOWED_TUNNEL_FIELDS = [
+  'ngrokAuthtoken',
+  'chiselServerUrl',
+  'chiselAuth',
+] as const
+
+/**
+ * Labels for the keys the API Keys tab renders inline. The keys that live in a
+ * credential drawer take their label from the catalogue instead, so there is
+ * exactly one place to change any given one.
+ */
+const INLINE_KEY_LABELS: Record<string, string> = {
+  tavilyApiKey: 'Tavily API Key',
+  shodanApiKey: 'Shodan API Key',
+  serpApiKey: 'SerpAPI Key',
+  wpscanApiToken: 'WPScan API Token',
+  pdcpApiKey: 'PDCP API Key',
+  nvdApiKey: 'NVD API Key',
+  vulnersApiKey: 'Vulners API Key',
+  urlscanApiKey: 'URLScan API Key',
+  censysApiToken: 'Censys API Token',
+  censysOrgId: 'Censys Organization ID',
+  fofaApiKey: 'FOFA API Key',
+  otxApiKey: 'AlienVault OTX Key',
+  netlasApiKey: 'Netlas API Key',
+  virusTotalApiKey: 'VirusTotal API Key',
+  zoomEyeApiKey: 'ZoomEye API Key',
+  criminalIpApiKey: 'Criminal IP API Key',
+  securitytrailsApiKey: 'SecurityTrails API Key',
+  viewdnsApiKey: 'ViewDNS API Key',
+  quakeApiKey: 'Quake API Key',
+  hunterApiKey: 'Hunter API Key',
+  publicWwwApiKey: 'PublicWWW API Key',
+  hunterHowApiKey: 'HunterHow API Key',
+  googleApiKey: 'Google Custom Search API Key',
+  googleApiCx: 'Google Custom Search CX',
+  onypheApiKey: 'Onyphe API Key',
+  driftnetApiKey: 'Driftnet API Key',
+  ngrokAuthtoken: 'ngrok Auth Token',
+  chiselServerUrl: 'Chisel Server URL',
+  chiselAuth: 'Chisel Auth',
+}
+
+/** The name a field appears under in the template: what Settings calls it. */
+export function templateKeyLabel(field: string): string {
+  return credentialField(field)?.label ?? INLINE_KEY_LABELS[field] ?? field
+}
+
+/** Label (and legacy column name) -> column, for reading a filled-in template. */
+function labelIndex(fields: readonly string[]): Map<string, string> {
+  const index = new Map<string, string>()
+  for (const field of fields) {
+    index.set(field, field)
+    index.set(templateKeyLabel(field), field)
+  }
+  return index
+}
+
+const KEY_BY_TEMPLATE_NAME = labelIndex(ALLOWED_KEY_FIELDS)
+const TUNNEL_BY_TEMPLATE_NAME = labelIndex(ALLOWED_TUNNEL_FIELDS)
+
+const ALLOWED_ROTATION_SET = new Set<string>(ROTATION_TOOL_NAMES)
+
+// ---------------------------------------------------------------------------
+// Template generation
+// ---------------------------------------------------------------------------
+
+export interface ApiKeysTemplate {
+  _instructions: string
+  keys: Record<string, string>
+  rotation: Record<string, { extraKeys: string[]; rotateEveryN: number } | { _comment: string }>
+  tunneling: Record<string, string>
+}
+
+export function buildTemplate(
+  currentKeys: Record<string, string>,
+  currentTunneling: Record<string, string>,
+): ApiKeysTemplate {
+  const keys: Record<string, string> = {}
+  for (const field of ALLOWED_KEY_FIELDS) {
+    keys[templateKeyLabel(field)] = currentKeys[field] ?? ''
+  }
+
+  const tunneling: Record<string, string> = {}
+  for (const field of ALLOWED_TUNNEL_FIELDS) {
+    tunneling[templateKeyLabel(field)] = currentTunneling[field] ?? ''
+  }
+
+  const rotation: Record<string, { extraKeys: string[]; rotateEveryN: number } | { _comment: string }> = {
+    _comment: 'Optional. Add extra keys for rotation. rotateEveryN = switch key every N API calls.' as never,
+  }
+  for (const tool of ROTATION_TOOL_NAMES) {
+    rotation[tool] = { extraKeys: [], rotateEveryN: 10 }
+  }
+
+  return {
+    _instructions: 'Fill in your API keys below. Each name is the one shown in Settings > API Keys. Leave empty strings for keys you don\'t use. For key rotation, add multiple keys to the array. Upload this file back to CART at Settings > API Keys & Tunneling.',
+    keys,
+    rotation,
+    tunneling,
+  }
+}
+
+export function templateToJson(template: ApiKeysTemplate): string {
+  return JSON.stringify(template, null, 2)
+}
+
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+
+export interface ValidationError {
+  message: string
+}
+
+export interface ParsedImport {
+  keys: Record<string, string>
+  rotation: Record<string, { extraKeys: string[]; rotateEveryN: number }>
+  tunneling: Record<string, string>
+  keyCount: number
+  rotationCount: number
+  tunnelingCount: number
+}
+
+function isMasked(v: string): boolean {
+  return v.startsWith('••••')
+}
+
+export function validateAndParse(raw: string, fileSize: number): ParsedImport | ValidationError {
+  if (fileSize > MAX_FILE_SIZE) {
+    return { message: `File too large (${(fileSize / 1024).toFixed(1)} KB). Maximum is ${MAX_FILE_SIZE / 1024} KB.` }
+  }
+
+  let data: unknown
+  try {
+    data = JSON.parse(raw)
+  } catch {
+    return { message: 'Invalid JSON - file could not be parsed.' }
+  }
+
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+    return { message: 'Invalid format - expected a JSON object at the top level.' }
+  }
+
+  const obj = data as Record<string, unknown>
+
+  const hasKeys = 'keys' in obj
+  const hasRotation = 'rotation' in obj
+  const hasTunneling = 'tunneling' in obj
+
+  // Reject unknown top-level fields
+  const ALLOWED_TOP_LEVEL = new Set(['keys', 'rotation', 'tunneling'])
+  for (const field of Object.keys(obj)) {
+    if (field.startsWith('_')) continue
+    if (!ALLOWED_TOP_LEVEL.has(field)) {
+      return { message: `Unknown top-level field: "${field}". Only "keys", "rotation", and "tunneling" are accepted.` }
+    }
+  }
+
+  if (!hasKeys && !hasRotation && !hasTunneling) {
+    return { message: 'Missing required section - file must contain at least one of: "keys", "rotation", "tunneling".' }
+  }
+
+  const result: ParsedImport = {
+    keys: {},
+    rotation: {},
+    tunneling: {},
+    keyCount: 0,
+    rotationCount: 0,
+    tunnelingCount: 0,
+  }
+
+  // Validate keys
+  if (hasKeys) {
+    if (typeof obj.keys !== 'object' || obj.keys === null || Array.isArray(obj.keys)) {
+      return { message: '"keys" must be a JSON object.' }
+    }
+    const keysObj = obj.keys as Record<string, unknown>
+    for (const [field, value] of Object.entries(keysObj)) {
+      if (field.startsWith('_')) continue
+      const column = KEY_BY_TEMPLATE_NAME.get(field)
+      if (!column) {
+        return { message: `Unknown key field: "${field}". Only recognized API key fields are accepted.` }
+      }
+      if (typeof value !== 'string') {
+        return { message: `Key "${field}" must be a string, got ${typeof value}.` }
+      }
+      if (value && !isMasked(value)) {
+        result.keys[column] = value
+        result.keyCount++
+      }
+    }
+  }
+
+  // Validate tunneling
+  if (hasTunneling) {
+    if (typeof obj.tunneling !== 'object' || obj.tunneling === null || Array.isArray(obj.tunneling)) {
+      return { message: '"tunneling" must be a JSON object.' }
+    }
+    const tunObj = obj.tunneling as Record<string, unknown>
+    for (const [field, value] of Object.entries(tunObj)) {
+      if (field.startsWith('_')) continue
+      const column = TUNNEL_BY_TEMPLATE_NAME.get(field)
+      if (!column) {
+        return { message: `Unknown tunneling field: "${field}".` }
+      }
+      if (typeof value !== 'string') {
+        return { message: `Tunneling field "${field}" must be a string, got ${typeof value}.` }
+      }
+      if (value && !isMasked(value)) {
+        result.tunneling[column] = value
+        result.tunnelingCount++
+      }
+    }
+  }
+
+  // Validate rotation
+  if (hasRotation) {
+    if (typeof obj.rotation !== 'object' || obj.rotation === null || Array.isArray(obj.rotation)) {
+      return { message: '"rotation" must be a JSON object.' }
+    }
+    const rotObj = obj.rotation as Record<string, unknown>
+    for (const [tool, cfg] of Object.entries(rotObj)) {
+      if (tool.startsWith('_')) continue
+      if (!ALLOWED_ROTATION_SET.has(tool)) {
+        return { message: `Unknown rotation tool: "${tool}".` }
+      }
+      if (typeof cfg !== 'object' || cfg === null || Array.isArray(cfg)) {
+        return { message: `Rotation config for "${tool}" must be an object.` }
+      }
+      const rotCfg = cfg as Record<string, unknown>
+      // Reject unknown properties inside rotation config
+      const ALLOWED_ROTATION_PROPS = new Set(['extraKeys', 'rotateEveryN'])
+      for (const prop of Object.keys(rotCfg)) {
+        if (prop.startsWith('_')) continue
+        if (!ALLOWED_ROTATION_PROPS.has(prop)) {
+          return { message: `Unknown property "${prop}" in rotation config for "${tool}". Only "extraKeys" and "rotateEveryN" are accepted.` }
+        }
+      }
+      if (!('extraKeys' in rotCfg) || !Array.isArray(rotCfg.extraKeys)) {
+        return { message: `Rotation "${tool}": "extraKeys" must be an array of strings.` }
+      }
+      for (let i = 0; i < rotCfg.extraKeys.length; i++) {
+        if (typeof rotCfg.extraKeys[i] !== 'string') {
+          return { message: `Rotation "${tool}": extraKeys[${i}] must be a string.` }
+        }
+      }
+      const validKeys = (rotCfg.extraKeys as string[]).filter(k => k.trim() && !isMasked(k))
+      const rotateEveryN = typeof rotCfg.rotateEveryN === 'number' && rotCfg.rotateEveryN > 0
+        ? Math.floor(rotCfg.rotateEveryN)
+        : 10
+      if (validKeys.length > 0) {
+        result.rotation[tool] = { extraKeys: validKeys, rotateEveryN }
+        result.rotationCount++
+      }
+    }
+  }
+
+  return result
+}
+
+export function isValidationError(result: ParsedImport | ValidationError): result is ValidationError {
+  return 'message' in result && !('keys' in result)
+}

@@ -1,0 +1,1476 @@
+'use client'
+
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { Play, Loader2, ArrowRight, Upload, FileText, Trash2, Info } from 'lucide-react'
+import { Modal, Tooltip, WikiInfoButton } from '@/components/ui'
+import { type ProjectRoots, admitsPartialHost } from '@/lib/partialReconScope'
+import { type ScopeGroup, groupLabel } from '@/lib/scopeGroups'
+import { isValidDomain } from '@/lib/validation'
+import { announceProjectWrite } from '@/lib/projectVersion'
+import type { GraphInputs, PartialReconParams, UserTargets } from '@/lib/recon-types'
+import { useOpenApiSourceLabels } from '@/hooks/useOpenApiSourceLabels'
+import { publicDocumentUrl, type OpenApiSourceRow } from '@/lib/openapiSourceStatus'
+import { SECTION_INPUT_MAP, SECTION_NODE_MAP, SECTION_ENRICH_MAP } from '../nodeMapping'
+import { WORKFLOW_TOOLS } from './workflowDefinition'
+import { INPUT_LOGIC_TOOLTIPS } from './inputLogicTooltips'
+
+interface PartialReconModalProps {
+  isOpen: boolean
+  toolId: string | null
+  onClose: () => void
+  onConfirm: (params: PartialReconParams) => void
+  projectId?: string
+  targetDomain?: string
+  /** The project's roots as the form holds them; shown when graph-inputs cannot be fetched. */
+  projectRoots?: string[]
+  isStarting?: boolean
+  userId?: string
+  /** OpenAPI: the project's configured documents, listed with their last status. */
+  openapiSources?: unknown
+}
+
+// --- API key requirements per tool ---
+// Each entry maps a tool ID to the API keys it benefits from.
+// `key`: the camelCase field name from /api/users/:id/settings
+// `label`: human-readable name shown in the warning
+// `impact`: what happens without it
+interface ApiKeyReq { key: string; label: string; impact: string }
+
+const TOOL_API_KEYS: Record<string, ApiKeyReq[]> = {
+  Shodan: [
+    { key: 'shodanApiKey', label: 'Shodan', impact: 'Falls back to InternetDB (free) -- no geolocation, banners, or Domain DNS.' },
+  ],
+  Urlscan: [
+    { key: 'urlscanApiKey', label: 'URLScan.io', impact: 'Public results only with lower rate limits.' },
+  ],
+  Gau: [
+    { key: 'urlscanApiKey', label: 'URLScan.io', impact: 'GAU URLScan source will have lower rate limits.' },
+  ],
+  Uncover: [
+    { key: 'shodanApiKey', label: 'Shodan', impact: 'Shodan engine disabled.' },
+    { key: 'censysApiToken', label: 'Censys', impact: 'Censys engine disabled.' },
+    { key: 'fofaApiKey', label: 'FOFA', impact: 'FOFA engine disabled.' },
+    { key: 'zoomEyeApiKey', label: 'ZoomEye', impact: 'ZoomEye engine disabled.' },
+    { key: 'netlasApiKey', label: 'Netlas', impact: 'Netlas engine disabled.' },
+    { key: 'criminalIpApiKey', label: 'Criminal IP', impact: 'Criminal IP engine disabled.' },
+  ],
+  OsintEnrichment: [
+    { key: 'censysApiToken', label: 'Censys', impact: 'Censys enrichment disabled.' },
+    { key: 'fofaApiKey', label: 'FOFA', impact: 'FOFA enrichment disabled.' },
+    { key: 'otxApiKey', label: 'OTX', impact: 'OTX limited to public data.' },
+    { key: 'netlasApiKey', label: 'Netlas', impact: 'Netlas enrichment disabled.' },
+    { key: 'virusTotalApiKey', label: 'VirusTotal', impact: 'VirusTotal enrichment disabled.' },
+    { key: 'zoomEyeApiKey', label: 'ZoomEye', impact: 'ZoomEye enrichment disabled.' },
+    { key: 'criminalIpApiKey', label: 'Criminal IP', impact: 'Criminal IP enrichment disabled.' },
+  ],
+  Nuclei: [
+    { key: 'nvdApiKey', label: 'NVD', impact: 'CVE lookup rate-limited (no key).' },
+    { key: 'vulnersApiKey', label: 'Vulners', impact: 'Vulners CVE enrichment disabled.' },
+  ],
+}
+
+const TOOL_DESCRIPTIONS: Record<string, string> = {
+  WebCachePoison:
+    'Detects web cache poisoning and web cache deception on live URLs. Runs the WCVS breadth engine, ' +
+    'then a native confirmation (cache oracle, isolated cache-buster, framework hypotheses, ' +
+    'baseline-poison-clean persistence check, confidence scoring). ' +
+    'Targets are loaded from the graph (BaseURLs + Endpoints). You can also provide custom URLs below. ' +
+    'Confirmed findings are merged as Vulnerability nodes (source=cache_poisoning) -- duplicates are updated, not recreated.',
+  SerializedScan:
+    'Passively scans response headers, Set-Cookie values and enumerated parameters for serialized-object ' +
+    'signatures (native Java, polymorphic JSON, XMLDecoder, XStream, SnakeYAML, PHP, Python pickle, .NET ' +
+    'BinaryFormatter / ViewState, Ruby Marshal, Hessian). It never deserializes and sends no traffic of its own. ' +
+    'Targets are loaded from the graph (BaseURLs + Endpoints). You can also provide custom URLs below. ' +
+    'Each hit is merged as an info-severity Vulnerability candidate (source=serialized_scan) the agent confirms out of band.',
+  SubdomainDiscovery:
+    'Discovers subdomains using 5 tools in parallel (crt.sh, HackerTarget, Subfinder, Amass, Knockpy), ' +
+    'filters wildcards with Puredns, then resolves full DNS records (A, AAAA, MX, NS, TXT, SOA, CNAME) for each. ' +
+    'Results are merged into the existing graph -- duplicates are updated, not recreated.',
+  Naabu:
+    'Scans discovered IPs and subdomains for open ports using Naabu (Docker-based). ' +
+    'Targets are loaded from the graph (subdomains + IPs from prior discovery). ' +
+    'You can also provide custom subdomains or IPs below. ' +
+    'Port and Service nodes are merged into the existing graph -- duplicates are updated, not recreated.',
+  Masscan:
+    'High-speed SYN port scanner for large networks using raw SYN packets. ' +
+    'Targets are loaded from the graph (IPs from prior discovery). ' +
+    'You can also provide custom IPs below. ' +
+    'Port and Service nodes are merged into the existing graph -- duplicates are updated, not recreated.',
+  Nmap:
+    'Runs Nmap service version detection (-sV) and NSE vulnerability scripts on ports already discovered by Naabu. ' +
+    'Targets are loaded from the graph (IPs + open ports from prior port scanning). ' +
+    'You can also provide custom subdomains or IPs below. ' +
+    'Port, Service, Technology, Vulnerability, and CVE nodes are merged into the existing graph.',
+  Tlsx:
+    'Grabs the TLS certificate on each open non-HTTP port with a single handshake (SMTPS, IMAPS, LDAPS, and any odd TLS port). ' +
+    'Targets are loaded from the graph (IPs + open ports from prior port scanning); you can also provide custom IPs and ports below. ' +
+    'Certificate nodes, IP HAS_CERTIFICATE edges, COVERS_HOST edges to in-scope SAN hostnames, and TLS posture on the Service are merged into the existing graph.',
+  Httpx:
+    'Probes HTTP services on discovered ports and subdomains using httpx. ' +
+    'Detects live services, technologies, SSL/TLS certificates, and response metadata. ' +
+    'Targets are loaded from the graph (IPs + ports from prior scanning, or subdomains on default ports). ' +
+    'You can also provide custom subdomains below. ' +
+    'BaseURL, Certificate, Technology, and Header nodes are merged into the existing graph.',
+  Katana:
+    'Crawls discovered BaseURLs using Katana to discover endpoints, parameters, and forms. ' +
+    'Targets are loaded from the graph (BaseURLs from prior HTTP probing). ' +
+    'You can also provide custom URLs below. ' +
+    'Endpoint, Parameter, BaseURL, and ExternalDomain nodes are merged into the existing graph.',
+  OpenAPI:
+    'Imports the endpoints declared in Swagger 2.0 and OpenAPI 3.0/3.1 documents, without calling a declared operation. ' +
+    'It fetches the project\'s configured documents and, with Auto-discover on, looks for more on graph BaseURLs. ' +
+    'Custom URLs below are fetched as specification documents even with Auto-discover off, and must sit under the project scope. ' +
+    'Each operation becomes an Endpoint, with its declared Parameters, under the BaseURL of the API server it names; ' +
+    'what a document read again no longer declares is withdrawn.',
+  ZapAjaxSpider:
+    'Browser-driven crawling with OWASP ZAP Ajax Spider. Executes JavaScript and SPA interactions to discover API endpoints that static crawlers can miss. ' +
+    'Targets are loaded from graph BaseURLs, with optional endpoint seeding from settings. You can also provide custom URLs below. ' +
+    'Custom headers/cookies configured in project settings are sent by ZAP for authenticated crawling. Endpoint, Parameter, BaseURL, and ExternalDomain nodes are merged into the existing graph.',
+  Hakrawler:
+    'Lightweight web crawler that discovers endpoints and links from BaseURLs using Hakrawler (Docker-based). ' +
+    'Targets are loaded from the graph (BaseURLs from prior HTTP probing). ' +
+    'You can also provide custom URLs below. ' +
+    'Endpoint, Parameter, BaseURL, and ExternalDomain nodes are merged into the existing graph.',
+  Jsluice:
+    'Static analysis of JavaScript files using jsluice (Bishop Fox). Downloads JS files from discovered URLs ' +
+    'and extracts hidden API endpoints, paths, query parameters, and secrets (AWS keys, API tokens). ' +
+    'Targets are loaded from the graph (BaseURLs + Endpoints from prior crawling). ' +
+    'You can also provide custom URLs below. ' +
+    'Endpoint, Parameter, BaseURL, Secret, and ExternalDomain nodes are merged into the existing graph.',
+  Gau:
+    'Passive URL discovery from web archives (Wayback Machine, Common Crawl, OTX, URLScan). ' +
+    'Queries historical URLs for the target domain and all discovered subdomains without touching the target directly. ' +
+    'You can also provide custom subdomains below. ' +
+    'Endpoint, Parameter, BaseURL, and ExternalDomain nodes are merged into the existing graph.',
+  ParamSpider:
+    'Passive parameter discovery from the Wayback Machine. ' +
+    'Queries historical URLs containing query parameters for the target domain and all discovered subdomains. ' +
+    'You can also provide custom subdomains below. ' +
+    'Endpoint, Parameter, BaseURL, and ExternalDomain nodes are merged into the existing graph.',
+  Arjun:
+    'Tests ~25,000 common parameter names against discovered endpoints using Arjun. ' +
+    'Discovers hidden query/body parameters (debug params, admin functionality, hidden API inputs). ' +
+    'Targets are loaded from the graph (BaseURLs + Endpoints from prior resource enumeration). ' +
+    'You can also provide custom URLs below. ' +
+    'Parameter nodes are merged into the existing graph -- duplicates are updated, not recreated.',
+  Ffuf:
+    'Directory and file fuzzer that brute-forces paths on BaseURLs using wordlists to discover hidden endpoints. ' +
+    'Targets are loaded from the graph (BaseURLs from prior HTTP probing). ' +
+    'You can also provide custom URLs below. ' +
+    'Endpoint, BaseURL, and ExternalDomain nodes are merged into the existing graph.',
+  Kiterunner:
+    'API endpoint bruteforcing using Kiterunner from Assetnote. Tests Swagger/OpenAPI-derived wordlists against BaseURLs ' +
+    'to discover hidden REST API routes (including POST/PUT/DELETE endpoints). ' +
+    'Targets are loaded from the graph (BaseURLs from prior HTTP probing). ' +
+    'You can also provide custom URLs below. ' +
+    'Endpoint and BaseURL nodes are merged into the existing graph.',
+  IpAttribution:
+    'Re-tags every IP already in the graph as a shared edge (a CDN edge serving many companies), dedicated ' +
+    '(its default certificate covers a target domain) or unknown, from the CDN signals the graph holds and one ' +
+    'TLS handshake without SNI per IP with port 443 open (capped, paced at the engagement rate ceiling, off in stealth mode). ' +
+    'Graph targets only: it updates existing IP nodes and creates none. ' +
+    'Useful after a partial scan added IPs, or when the step was off during the original scan.',
+  EndpointAiClassifier:
+    'Re-runs the AI surface classifier over every Endpoint and Parameter already in the graph. ' +
+    'Stamps Endpoint.ai_interface_type (llm-chat / llm-completion / llm-embedding / llm-tool-call / sse-stream / mcp / llm-graphql / non-llm), ' +
+    'flags is_ai_rag_ingest on RAG ingestion paths, and marks parameters whose names match the prompt-injection catalogue as is_ai_prompt_injectable. ' +
+    'No traffic is sent to the target - pure pattern matching against data the URL-discovery tools already collected. ' +
+    'Useful when the catalogue has been updated, when a new lap of AI annotations ships, or when classifier toggles were off during the original scan.',
+  AiSurfaceRecon:
+    'Re-runs the active AI/LLM/MCP surface probes against the AI surfaces already in the graph. ' +
+    'Confirms chat endpoints (1-token shape probe), runs the MCP handshake and tool enumeration with static tool-poisoning analysis, ' +
+    'parses OpenAPI / ai-plugin manifests, guesses the model family, and confirms vector databases. ' +
+    'Probes only hosts already showing an AI signal; sends benign shape-probes only (no jailbreaks, no payloads). ' +
+    'Enriches Endpoint / Parameter / Technology nodes and creates MCP tool-poisoning Vulnerability nodes. ' +
+    'Useful after the probe packs or YARA rules are updated, or when the module was off during the original scan.',
+  JsRecon:
+    'Comprehensive JavaScript reconnaissance scanner. Downloads JS files from discovered URLs ' +
+    'and runs 6 analysis modules: secret detection (100+ patterns with live validation), endpoint extraction, ' +
+    'source map discovery, dependency confusion checks, DOM sink analysis, and framework detection. ' +
+    'Targets are loaded from the graph (BaseURLs + Endpoints from prior crawling). ' +
+    'You can also provide custom URLs below. ' +
+    'Secret, Endpoint, and JsReconFinding nodes are merged into the existing graph.',
+  SupplyChainRecon:
+    'Black-box supply-chain audit. Infers the npm package set the target actually serves - ' +
+    'mining node_modules paths out of source maps, module imports, and the technology stack detected during HTTP probing - ' +
+    'then verdicts that set against a LOCAL copy of the OSV database. ' +
+    'Fully passive and offline: it re-uses the JavaScript JS Recon already downloaded (no extra traffic to the target) ' +
+    'and the verdict makes zero network calls. ' +
+    'Targets are loaded from the graph (BaseURLs + Endpoints); you can also provide custom URLs below. ' +
+    'Creates Package and MalPackageFinding nodes (MAL- = malicious, e.g. a typosquat; CVE/GHSA = known-vulnerable) ' +
+    'and links them to the serving BaseURL. Requires the offline OSV database: ./CART.sh supply-chain-sync npm',
+  Nuclei:
+    'Template-based vulnerability scanner detecting CVEs, misconfigurations, exposed panels, and web application vulnerabilities (SQLi, XSS, RCE). ' +
+    'Targets are built as the UNION of every available source in the graph (deduplicated): Endpoints with parameters from resource_enum, BaseURLs verified by httpx, and http(s)://<sub> for any Subdomain whose host is not already covered by the first two sources - so newly discovered subdomains get scanned even before httpx has probed them. IPs are excluded by default (toggle "Scan All IPs" to include). ' +
+    'DAST mode is a filter, not an add-on: when enabled it loads ONLY templates with a fuzz: directive (~300 of ~8000) and SKIPS detection templates and custom detection templates. Use DAST-native tags (sqli, xss, ssrf) - detection-class tags (graphql, apollo, hasura, exposure) produce an empty set and the scan fatals. Most production scans should leave DAST off. ' +
+    'You can also provide custom URLs below. ' +
+    'Vulnerability, CVE, Endpoint, Parameter, MitreData, and Capec nodes are merged into the existing graph.',
+  SubdomainTakeover:
+    'Layered subdomain takeover detection. Runs Subjack (DNS-first, fingerprints CNAME/NS/MX against known takeover-prone services) and ' +
+    'Nuclei with takeover-only templates (-t http/takeovers/ -t dns/) against alive URLs. ' +
+    'Findings are deduplicated across tools, scored (confirmed / likely / manual_review), and written as Vulnerability nodes ' +
+    'with source="takeover_scan". Targets are loaded from the graph (Subdomains + alive URLs). ' +
+    'You can also provide custom subdomains below.',
+  VhostSni:
+    'Discovers hidden virtual hosts on every target IP using two crafted curl probes per candidate hostname: ' +
+    'L7 (overrides the HTTP Host header) catches classic vhosts, L4 (uses --resolve to force the TLS SNI) catches ingress / k8s / Cloudflare routing. ' +
+    'Each response is compared to a baseline (raw IP request) and anomalies become Vulnerability nodes with source="vhost_sni_enum". ' +
+    'Candidate hostnames come from the graph (Subdomains, ExternalDomains, TLS SANs, CNAMEs, PTR records resolving to the target IP) ' +
+    'plus the bundled vhost-common.txt wordlist (~2,300 prefixes) and any custom wordlist set in the project. ' +
+    'You can also provide custom subdomains (added as candidate hostnames) and IPs (added as extra targets) below.',
+  GraphqlScan:
+    'Active GraphQL security scanner. Discovers GraphQL endpoints from crawled BaseURLs + Endpoints + JS findings, ' +
+    'tests for exposed introspection, extracts schema, detects sensitive field exposure, and flags mutation / proxy ' +
+    'vulnerabilities. Runs the native scanner + graphql-cop (12 external checks: alias/batch/directive/circular DoS, ' +
+    'GraphiQL detection, GET-method CSRF, trace/debug leakage, field suggestions, unhandled errors). ' +
+    'You can also provide custom GraphQL endpoint URLs below to test directly (bypasses auto-discovery). ' +
+    'Enriches Endpoint nodes with is_graphql + schema metadata and creates Vulnerability nodes.',
+  SecurityChecks:
+    'Runs custom security checks on discovered infrastructure: Direct IP Access, TLS/SSL certificate expiry, ' +
+    'Security Headers (Referrer-Policy, Permissions-Policy, COOP/CORP/COEP), Authentication (HTTPS, cookie flags), ' +
+    'DNS Security (SPF, DMARC, DNSSEC, zone transfer), Exposed Services (admin ports, databases), and Application Security. ' +
+    'Targets are loaded from the graph (IPs, subdomains, BaseURLs from prior phases). ' +
+    'Vulnerability nodes are merged into the existing graph.',
+  Shodan:
+    'Passive OSINT enrichment using the Shodan API (or free InternetDB fallback). ' +
+    'Enriches discovered IPs with geolocation, OS, ISP, open ports, service banners, reverse DNS hostnames, and known CVEs. ' +
+    'Targets are loaded from the graph (IPs from prior Subdomain Discovery). ' +
+    'Port, Service, Subdomain, ExternalDomain, DNSRecord, Vulnerability, and CVE nodes are merged into the existing graph.',
+  Urlscan:
+    'Passive OSINT enrichment using URLScan.io historical scan data. ' +
+    'Discovers additional subdomains, IPs, ASN info, domain age, TLS certificates, server technologies, and screenshots. ' +
+    'Also enriches existing BaseURLs with screenshot URLs and creates Endpoint/Parameter nodes from discovered URL paths. ' +
+    'Subdomain, ExternalDomain, IP, Endpoint, and Parameter nodes are merged into the existing graph.',
+  Uncover:
+    'Multi-engine passive discovery using ProjectDiscovery Uncover. ' +
+    'Searches Shodan, Censys, FOFA, ZoomEye, Netlas, CriminalIP, and other engines simultaneously ' +
+    'to discover additional IPs, subdomains, open ports, and URLs associated with the target domain. ' +
+    'IP, Subdomain, Port, and Endpoint nodes are merged into the existing graph.',
+  OsintEnrichment:
+    'Passive OSINT enrichment using multiple APIs in parallel: Censys, FOFA, OTX, Netlas, VirusTotal, ZoomEye, and CriminalIP. ' +
+    'Enriches discovered IPs with open ports, services, certificates, threat intelligence, malware associations, DNS records, and vulnerabilities. ' +
+    'Targets are loaded from the graph (IPs from prior Subdomain Discovery). Only sub-tools with valid API keys will run. ' +
+    'Subdomain, Port, Service, ExternalDomain, DNSRecord, ThreatPulse, Malware, Certificate, Vulnerability, and CVE nodes are merged into the existing graph.',
+}
+
+// --- Validation helpers ---
+
+const IPV4_RE = /^(\d{1,3}\.){3}\d{1,3}$/
+const IPV6_RE = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/
+const CIDR_V4_RE = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/
+const CIDR_V6_RE = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}\/\d{1,3}$/
+
+function validateIp(value: string): string | null {
+  if (IPV4_RE.test(value)) {
+    const octets = value.split('.').map(Number)
+    if (octets.some(o => o > 255)) return `Invalid IP: ${value}`
+    return null
+  }
+  if (IPV6_RE.test(value)) return null
+  if (CIDR_V4_RE.test(value)) {
+    const [ip, prefix] = value.split('/')
+    const octets = ip.split('.').map(Number)
+    if (octets.some(o => o > 255)) return `Invalid CIDR: ${value}`
+    const pfx = parseInt(prefix, 10)
+    if (pfx < 24 || pfx > 32) return `CIDR prefix must be /24 to /32, got /${pfx}`
+    return null
+  }
+  if (CIDR_V6_RE.test(value)) {
+    const prefix = parseInt(value.split('/')[1], 10)
+    if (prefix < 120 || prefix > 128) return `IPv6 CIDR prefix must be /120 to /128, got /${prefix}`
+    return null
+  }
+  return `Invalid IP or CIDR: ${value}`
+}
+
+function validatePort(value: string): string | null {
+  const num = parseInt(value, 10)
+  if (isNaN(num) || !Number.isInteger(num)) return `Not a valid port number: ${value}`
+  if (num < 1 || num > 65535) return `Port must be 1-65535, got ${num}`
+  return null
+}
+
+/** The run's scope in one line: each group (`*.api.example.com (enumerated)`,
+ *  `example.com: www (listed)`), or the bare roots when the groups are unknown. */
+function describeScope(scope: ProjectRoots): string {
+  return scope.groups.length
+    ? scope.groups.map(groupLabel).join('; ')
+    : `under ${scope.roots.join(', ')}`
+}
+
+// A typed host must pass the same rule the orchestrator and the recon container
+// apply (§4.6): strictly under an enumerated scan root, one of a listed group's
+// hosts, or a scan root itself only when Root is on.
+function validateUrl(value: string, scope: ProjectRoots): string | null {
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return `URL must use http or https: ${value}`
+    if (!url.hostname) return `URL has no hostname: ${value}`
+    if (scope.roots.length && !admitsPartialHost(scope, url.hostname)) {
+      return `${url.hostname} is out of scope for this run (${describeScope(scope)})`
+    }
+    return null
+  } catch {
+    return `Invalid URL: ${value}`
+  }
+}
+
+function validateSubdomain(value: string, scope: ProjectRoots): string | null {
+  if (!isValidDomain(value)) return `Invalid hostname: ${value}`
+  if (scope.roots.length && !admitsPartialHost(scope, value)) {
+    return `${value} is out of scope for this run (${describeScope(scope)})`
+  }
+  return null
+}
+
+function validateLines(text: string, validator: (v: string) => string | null) {
+  if (!text.trim()) return { errors: [] as { line: number; error: string }[], validCount: 0 }
+  const lines = text.split('\n').map(s => s.trim()).filter(Boolean)
+  const errors: { line: number; error: string }[] = []
+  let validCount = 0
+  lines.forEach((line, i) => {
+    const err = validator(line)
+    if (err) errors.push({ line: i + 1, error: err })
+    else validCount++
+  })
+  return { errors, validCount }
+}
+
+// --- Shared inline styles ---
+
+const textareaStyle = (hasError: boolean) => ({
+  width: '100%',
+  padding: '8px 10px',
+  borderRadius: '6px',
+  border: `1px solid ${hasError ? '#ef4444' : 'var(--border-color, #334155)'}`,
+  backgroundColor: 'var(--bg-secondary, #1e293b)',
+  color: 'var(--text-primary, #e2e8f0)',
+  fontSize: '12px',
+  fontFamily: 'monospace',
+  resize: 'vertical' as const,
+})
+
+const labelStyle = { fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary, #94a3b8)', marginBottom: '4px' }
+const hintStyle = { fontSize: '10px', color: 'var(--text-muted, #64748b)', marginTop: '2px' }
+const errorListStyle = { marginTop: '4px', display: 'flex', flexDirection: 'column' as const, gap: '2px' }
+const errorLineStyle = { fontSize: '10px', color: '#f87171' }
+const noteStyle = {
+  fontSize: '11px', color: 'var(--text-secondary, #94a3b8)', lineHeight: '1.5', padding: '8px 12px',
+  borderRadius: '6px', backgroundColor: 'var(--bg-secondary, #1e293b)',
+  border: '1px solid var(--border-color, #334155)', overflowWrap: 'anywhere' as const,
+}
+const legacyGraphStyle = {
+  ...noteStyle, color: 'var(--status-warning-text)', backgroundColor: 'var(--status-warning-bg)',
+  border: '1px solid var(--status-warning)',
+}
+const errorBoxStyle = {
+  fontSize: '11px', color: '#f87171', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
+  backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
+}
+const linkButtonStyle = {
+  background: 'none', border: 'none', padding: '0 0 0 6px', color: '#60a5fa',
+  cursor: 'pointer', fontSize: '12px', fontFamily: 'inherit',
+}
+
+// A Domain batch can hold 50 roots; past this many the summary collapses.
+const ROOTS_SHOWN = 3
+
+function RootsSummary({ roots }: { roots: readonly string[] }) {
+  const [expanded, setExpanded] = useState(false)
+  const hidden = roots.length - ROOTS_SHOWN
+  return (
+    <span data-testid="partial-recon-roots" style={{ overflowWrap: 'anywhere' }}>
+      {(expanded ? roots : roots.slice(0, ROOTS_SHOWN)).join(', ')}
+      {hidden > 0 && (
+        <button type="button" onClick={() => setExpanded(v => !v)} style={linkButtonStyle}>
+          {expanded ? 'show less' : `+${hidden} more`}
+        </button>
+      )}
+    </span>
+  )
+}
+
+// --- Component ---
+
+export function PartialReconModal({
+  isOpen,
+  toolId,
+  onClose,
+  onConfirm,
+  projectId,
+  targetDomain = '',
+  projectRoots,
+  isStarting = false,
+  userId,
+  openapiSources,
+}: PartialReconModalProps) {
+  const [graphInputs, setGraphInputs] = useState<GraphInputs | null>(null)
+  // The saved project's scope groups: what the orchestrator judges typed input by.
+  const [scopeGroups, setScopeGroups] = useState<ScopeGroup[] | null>(null)
+  const [loadingInputs, setLoadingInputs] = useState(false)
+  const [userSettings, setUserSettings] = useState<Record<string, string> | null>(null)
+  const [customSubdomains, setCustomSubdomains] = useState('')
+  const [customIps, setCustomIps] = useState('')
+  const [ipAttachTo, setIpAttachTo] = useState<string | null>(null)
+  const [customPorts, setCustomPorts] = useState('')
+  const [customUrls, setCustomUrls] = useState('')
+  const [urlAttachTo, setUrlAttachTo] = useState<string | null>(null)
+  const [includeGraphTargets, setIncludeGraphTargets] = useState(true)
+  // SubdomainDiscovery: the roots the operator left ticked (null = the default, all).
+  const [discoveryPick, setDiscoveryPick] = useState<string[] | null>(null)
+  // OpenAPI: the configured documents with their last status (D19).
+  const openapiRows = useMemo(
+    () => (Array.isArray(openapiSources) ? openapiSources as OpenApiSourceRow[] : [])
+      .filter(row => row && typeof row === 'object' && row.url && row.enabled !== false),
+    [openapiSources],
+  )
+  const openapiLabels = useOpenApiSourceLabels(
+    toolId === 'OpenAPI' ? graphInputs?.openapiSourceStatus : undefined, openapiRows)
+
+  // Nuclei sub-feature toggles (override project settings)
+  const [nucleiCveLookup, setNucleiCveLookup] = useState(true)
+  const [nucleiMitre, setNucleiMitre] = useState(true)
+  const [nucleiSecurityChecks, setNucleiSecurityChecks] = useState(true)
+
+  // JS file upload state (JsRecon only)
+  const [uploadedJsFiles, setUploadedJsFiles] = useState<{ name: string; size: number; uploaded_at: string }[]>([])
+  const [isUploading, setIsUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const jsFileInputRef = useRef<HTMLInputElement>(null)
+
+  // A string, so a fresh projectRoots array on every parent render does not refetch.
+  const formRootsKey = (projectRoots?.length ? projectRoots : (targetDomain ? [targetDomain] : [])).join(',')
+
+  useEffect(() => {
+    if (!isOpen || !toolId || !projectId) return
+    setLoadingInputs(true)
+    setCustomSubdomains('')
+    setCustomIps('')
+    setIpAttachTo(null)
+    setCustomPorts('')
+    setCustomUrls('')
+    setUrlAttachTo(null)
+    setIncludeGraphTargets(true)
+    setDiscoveryPick(null)
+    setNucleiCveLookup(true)
+    setNucleiMitre(true)
+    setNucleiSecurityChecks(true)
+    setUploadedJsFiles([])
+    setUploadError(null)
+    // Without the route, offer the roots the form holds; the orchestrator
+    // re-derives them from the saved project either way.
+    const formRoots = formRootsKey ? formRootsKey.split(',').sort() : []
+    const fallback: GraphInputs = {
+      domain: formRoots[0] || null, domains: formRoots, stale_domains: [], empty_domains: [],
+      existing_subdomains_count: 0, existing_ips_count: 0, existing_ports_count: 0, source: 'settings',
+    }
+    setScopeGroups(null)
+    fetch(`/api/projects/${projectId}`)
+      .then(res => (res.ok ? res.json() : null))
+      .then(project => setScopeGroups(Array.isArray(project?.scopeGroups) ? project.scopeGroups : null))
+      .catch(() => setScopeGroups(null))
+    fetch(`/api/recon/${projectId}/graph-inputs/${toolId}`)
+      .then(res => res.ok ? res.json() : null)
+      .then((data: GraphInputs | null) => {
+        setGraphInputs(data || fallback)
+        setLoadingInputs(false)
+      })
+      .catch(() => {
+        setGraphInputs(fallback)
+        setLoadingInputs(false)
+      })
+    // Fetch existing uploaded JS files for JsRecon
+    if (toolId === 'JsRecon') {
+      fetch(`/api/js-recon/${projectId}/upload`)
+        .then(res => res.ok ? res.json() : null)
+        .then(data => setUploadedJsFiles(data?.files || []))
+        .catch(() => setUploadedJsFiles([]))
+    }
+    // Fetch user settings for API key warnings (only for tools that need keys)
+    if (userId && TOOL_API_KEYS[toolId]) {
+      fetch(`/api/users/${userId}/settings`)
+        .then(r => r.ok ? r.json() : null)
+        .then(s => setUserSettings(s || {}))
+        .catch(() => setUserSettings(null))
+    } else {
+      setUserSettings(null)
+    }
+  }, [isOpen, toolId, projectId, formRootsKey, userId])
+
+  // JS file upload handlers (JsRecon only)
+  const handleJsFileUpload = useCallback(async (file: File) => {
+    if (!projectId) return
+    setIsUploading(true)
+    setUploadError(null)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await fetch(`/api/js-recon/${projectId}/upload`, { method: 'POST', body: formData })
+      if (!res.ok) {
+        const data = await res.json()
+        setUploadError(data.error || 'Upload failed')
+        return
+      }
+      announceProjectWrite(projectId, (await res.json()).projectUpdatedAt)
+      const listRes = await fetch(`/api/js-recon/${projectId}/upload`)
+      if (listRes.ok) {
+        const data = await listRes.json()
+        setUploadedJsFiles(data.files || [])
+      }
+    } catch {
+      setUploadError('Upload failed')
+    } finally {
+      setIsUploading(false)
+      if (jsFileInputRef.current) jsFileInputRef.current.value = ''
+    }
+  }, [projectId])
+
+  const handleJsFileDelete = useCallback(async (filename: string) => {
+    if (!projectId) return
+    try {
+      const res = await fetch(`/api/js-recon/${projectId}/upload?name=${encodeURIComponent(filename)}`, { method: 'DELETE' })
+      if (res.ok) announceProjectWrite(projectId, (await res.json()).projectUpdatedAt)
+      const listRes = await fetch(`/api/js-recon/${projectId}/upload`)
+      if (listRes.ok) {
+        const data = await listRes.json()
+        setUploadedJsFiles(data.files || [])
+      }
+    } catch { /* ignore */ }
+  }, [projectId])
+
+  // The roots this run covers. A route that predates multi-root runs sent only `domain`.
+  const domains = useMemo(
+    () => graphInputs?.domains ?? (graphInputs?.domain ? [graphInputs.domain] : []),
+    [graphInputs],
+  )
+  const domain = domains[0] || ''
+  // This run's groups; without them (an older webapp, a failed read) the rule
+  // falls back to "under a root", and the server still applies the full one.
+  const partialScope = useMemo<ProjectRoots>(() => {
+    const wanted = new Set(domains.map(d => d.toLowerCase()))
+    return {
+      mode: 'batch', roots: domains, wildcardRoots: [],
+      groups: (scopeGroups ?? []).filter(g => wanted.has(g.scanRoot)),
+    }
+  }, [domains, scopeGroups])
+  const staleDomains = graphInputs?.stale_domains ?? []
+  // Domain nodes built under the old scope model (§4.11.6): the start route
+  // refuses until a full recon rebuilds the graph, so Run is off here too.
+  const legacyGraph = graphInputs?.legacy_graph ?? []
+  const oldModelGraph = !loadingInputs && legacyGraph.length > 0
+  const emptyDomains = graphInputs?.empty_domains ?? []
+  const isSubdomainDiscovery = toolId === 'SubdomainDiscovery'
+  const enumerableDomains = useMemo(
+    () => graphInputs?.discovery_domains ?? domains,
+    [graphInputs?.discovery_domains, domains],
+  )
+  // SubdomainDiscovery runs only on the roots allowed to enumerate that are still
+  // ticked; every other tool covers all of `domains`.
+  const runDomains = useMemo(
+    () => isSubdomainDiscovery
+      ? enumerableDomains.filter(root => discoveryPick === null || discoveryPick.includes(root))
+      : domains,
+    [isSubdomainDiscovery, enumerableDomains, discoveryPick, domains],
+  )
+  const toggleDiscoveryRoot = useCallback((root: string, on: boolean) => {
+    setDiscoveryPick(prev => {
+      const current = prev ?? enumerableDomains
+      return on ? [...new Set([...current, root])] : current.filter(r => r !== root)
+    })
+  }, [enumerableDomains])
+  const isPortScanner = toolId === 'Naabu' || toolId === 'Masscan'
+  const isNmap = toolId === 'Nmap'
+  const isTlsx = toolId === 'Tlsx'
+  const isHttpx = toolId === 'Httpx'
+  const isNuclei = toolId === 'Nuclei'
+  const isGraphql = toolId === 'GraphqlScan'
+  const isSecurityChecks = toolId === 'SecurityChecks'
+  const isResourceEnum = toolId === 'Katana' || toolId === 'OpenAPI' || toolId === 'ZapAjaxSpider' || toolId === 'Hakrawler' || toolId === 'Jsluice' || toolId === 'Ffuf' || toolId === 'Kiterunner' || toolId === 'JsRecon' || toolId === 'SupplyChainRecon' || isNuclei
+  const isArjun = toolId === 'Arjun'
+  const isGau = toolId === 'Gau'
+  const isParamSpider = toolId === 'ParamSpider'
+  const isShodan = toolId === 'Shodan'
+  const isOsintEnrichment = toolId === 'OsintEnrichment'
+  const isSubdomainTakeover = toolId === 'SubdomainTakeover'
+  const isVhostSni = toolId === 'VhostSni'
+  const isWebCachePoison = toolId === 'WebCachePoison'
+  const isSerializedScan = toolId === 'SerializedScan'
+  const isOriginDiscovery = toolId === 'OriginDiscovery'
+  const hasUserInputs = isPortScanner || isNmap || isTlsx || isHttpx || isResourceEnum || isArjun || isGau || isParamSpider || isSecurityChecks || isShodan || isOsintEnrichment || isGraphql || isSubdomainTakeover || isVhostSni || isWebCachePoison || isSerializedScan || isOriginDiscovery
+  const hasIpInput = isPortScanner || isNmap || isTlsx || isHttpx || isSecurityChecks || isShodan || isOsintEnrichment || isVhostSni
+  const hasSubdomainInput = toolId === 'Naabu' || isHttpx || isGau || isParamSpider || isSecurityChecks || isSubdomainTakeover || isVhostSni || isOriginDiscovery
+  const hasPortInput = isNmap || isTlsx || isHttpx
+  // GraphqlScan / WebCachePoison SECTION_INPUT_MAP = [BaseURL, Endpoint]. Per
+  // PROMPT.ADD_PARTIAL_RECON.md, BaseURL-accepting tools get a URL textarea;
+  // Endpoint is graph-only (never manually entered).
+  const hasUrlInput = isResourceEnum || isArjun || isSecurityChecks || isGraphql || isWebCachePoison || isSerializedScan
+
+  // Subdomain validation
+  const subdomainValidation = useMemo(
+    () => validateLines(customSubdomains, v => validateSubdomain(v, partialScope)),
+    [customSubdomains, partialScope],
+  )
+
+  // IP validation
+  const ipValidation = useMemo(
+    () => validateLines(customIps, validateIp),
+    [customIps],
+  )
+
+  // Port validation (Nmap only)
+  const portValidation = useMemo(
+    () => validateLines(customPorts, validatePort),
+    [customPorts],
+  )
+
+  // URL validation (resource enum tools: Katana, Hakrawler) -- must be in project scope
+  const urlValidation = useMemo(
+    () => validateLines(customUrls, v => validateUrl(v, partialScope)),
+    [customUrls, partialScope],
+  )
+
+  const hasValidationErrors = (hasSubdomainInput && subdomainValidation.errors.length > 0)
+    || (hasIpInput && ipValidation.errors.length > 0)
+    || (hasPortInput && portValidation.errors.length > 0)
+    || (hasUrlInput && urlValidation.errors.length > 0)
+
+  // Compute missing API keys for the current tool
+  const missingApiKeys = useMemo(() => {
+    if (!toolId || !userSettings || !TOOL_API_KEYS[toolId]) return []
+    return TOOL_API_KEYS[toolId].filter(req => !userSettings[req.key])
+  }, [toolId, userSettings])
+
+  // Build dropdown options: graph subdomains + custom subdomains (live)
+  const attachToOptions = useMemo(() => {
+    const graphSubs = graphInputs?.existing_subdomains || []
+    const customSubs = customSubdomains
+      .split('\n')
+      .map(s => s.trim().toLowerCase())
+      .filter(s => s && isValidDomain(s) && admitsPartialHost(partialScope, s))
+    // Deduplicate, graph first
+    const seen = new Set<string>()
+    const options: { value: string; label: string; source: string }[] = []
+    for (const s of graphSubs) {
+      if (!seen.has(s)) { seen.add(s); options.push({ value: s, label: s, source: 'graph' }) }
+    }
+    for (const s of customSubs) {
+      if (!seen.has(s)) { seen.add(s); options.push({ value: s, label: s, source: 'custom' }) }
+    }
+    return options
+  }, [graphInputs?.existing_subdomains, customSubdomains, partialScope])
+
+  // Build dropdown options for URL attachment: existing BaseURLs from graph
+  const urlAttachToOptions = useMemo(() => {
+    const graphBaseUrls = graphInputs?.existing_baseurls || []
+    return graphBaseUrls.map(u => ({ value: u, label: u }))
+  }, [graphInputs?.existing_baseurls])
+
+  // If selected attach_to was removed from options, reset to null
+  useEffect(() => {
+    if (ipAttachTo && !attachToOptions.some(o => o.value === ipAttachTo)) {
+      setIpAttachTo(null)
+    }
+  }, [attachToOptions, ipAttachTo])
+
+  useEffect(() => {
+    if (urlAttachTo && !urlAttachToOptions.some(o => o.value === urlAttachTo)) {
+      setUrlAttachTo(null)
+    }
+  }, [urlAttachToOptions, urlAttachTo])
+
+  const handleRun = useCallback(() => {
+    if (!runDomains.length || hasValidationErrors) return
+
+    if (hasUserInputs) {
+      const subdomains = hasSubdomainInput ? customSubdomains.split('\n').map(s => s.trim()).filter(Boolean) : []
+      const ips = hasIpInput ? customIps.split('\n').map(s => s.trim()).filter(Boolean) : []
+      const ports = hasPortInput ? customPorts.split('\n').map(s => s.trim()).filter(Boolean).map(Number).filter(n => n >= 1 && n <= 65535) : []
+      const urls = hasUrlInput ? customUrls.split('\n').map(s => s.trim()).filter(Boolean) : []
+      const hasCustomInput = subdomains.length || ips.length || ports.length || urls.length
+      const userTargets: UserTargets | undefined = hasCustomInput
+        ? {
+            subdomains, ips, ip_attach_to: ipAttachTo,
+            ...(ports.length ? { ports } : {}),
+            // OpenAPI attaches what a document declares to the API server it names (D13).
+            ...(urls.length ? { urls, url_attach_to: toolId === 'OpenAPI' ? null : urlAttachTo } : {}),
+          }
+        : undefined
+
+      // Build Nuclei settings overrides from modal checkboxes
+      const nucleiOverrides = isNuclei ? {
+        settings_overrides: {
+          CVE_LOOKUP_ENABLED: nucleiCveLookup,
+          MITRE_ENABLED: nucleiMitre,
+          SECURITY_CHECK_ENABLED: nucleiSecurityChecks,
+        },
+      } : {}
+
+      const params = {
+        tool_id: toolId || '',
+        graph_inputs: { domains: runDomains },
+        user_inputs: [],
+        user_targets: userTargets,
+        ...(includeGraphTargets ? {} : { include_graph_targets: false }),
+        ...nucleiOverrides,
+      }
+      console.log('[PartialReconModal] handleRun params:', JSON.stringify(params))
+      onConfirm(params)
+    } else {
+      // Build Nuclei settings overrides from modal checkboxes
+      const nucleiOverrides = isNuclei ? {
+        settings_overrides: {
+          CVE_LOOKUP_ENABLED: nucleiCveLookup,
+          MITRE_ENABLED: nucleiMitre,
+          SECURITY_CHECK_ENABLED: nucleiSecurityChecks,
+        },
+      } : {}
+
+      onConfirm({
+        tool_id: toolId || '',
+        graph_inputs: { domains: runDomains },
+        user_inputs: [],
+        ...(includeGraphTargets ? {} : { include_graph_targets: false }),
+        ...nucleiOverrides,
+      })
+    }
+  }, [runDomains, hasValidationErrors, hasUserInputs, hasSubdomainInput, hasIpInput, hasPortInput, hasUrlInput, isNmap, toolId, onConfirm, customSubdomains, customIps, ipAttachTo, customPorts, customUrls, urlAttachTo, includeGraphTargets, isNuclei, nucleiCveLookup, nucleiMitre, nucleiSecurityChecks])
+
+  if (!isOpen || !toolId) return null
+
+  const inputNodeTypes = SECTION_INPUT_MAP[toolId] || []
+  const outputNodeTypes = SECTION_NODE_MAP[toolId] || []
+  const enrichNodeTypes = SECTION_ENRICH_MAP[toolId] || []
+  const hasNoGraphTargets = (isPortScanner && !loadingInputs && (graphInputs?.existing_ips_count ?? 0) === 0)
+    || ((isNmap || isTlsx) && !loadingInputs && (graphInputs?.existing_ports_count ?? 0) === 0)
+    || (isHttpx && !loadingInputs && (graphInputs?.existing_ports_count ?? 0) === 0 && (graphInputs?.existing_subdomains_count ?? 0) === 0)
+    || (toolId === 'JsRecon' && !loadingInputs && (graphInputs?.existing_baseurls_count ?? 0) === 0 && (graphInputs?.existing_endpoints_count ?? 0) === 0 && uploadedJsFiles.length === 0)
+    || (isNuclei && !loadingInputs && (graphInputs?.existing_baseurls_count ?? 0) === 0 && (graphInputs?.existing_endpoints_count ?? 0) === 0 && (graphInputs?.existing_subdomains_count ?? 0) === 0)
+    || (isGraphql && !loadingInputs && (graphInputs?.existing_baseurls_count ?? 0) === 0 && (graphInputs?.existing_endpoints_count ?? 0) === 0)
+    || (isWebCachePoison && !loadingInputs && (graphInputs?.existing_baseurls_count ?? 0) === 0 && (graphInputs?.existing_endpoints_count ?? 0) === 0)
+    || (isSerializedScan && !loadingInputs && (graphInputs?.existing_baseurls_count ?? 0) === 0 && (graphInputs?.existing_endpoints_count ?? 0) === 0)
+    || (toolId === 'ZapAjaxSpider' && !loadingInputs && (graphInputs?.existing_baseurls_count ?? 0) === 0 && (graphInputs?.existing_endpoints_count ?? 0) === 0)
+    || (isResourceEnum && !isNuclei && toolId !== 'JsRecon' && toolId !== 'ZapAjaxSpider' && !loadingInputs && (graphInputs?.existing_baseurls_count ?? 0) === 0)
+    || (isArjun && !loadingInputs && (graphInputs?.existing_baseurls_count ?? 0) === 0 && (graphInputs?.existing_endpoints_count ?? 0) === 0)
+    || (toolId === 'EndpointAiClassifier' && !loadingInputs && (graphInputs?.existing_endpoints_count ?? 0) === 0)
+    || (toolId === 'AiSurfaceRecon' && !loadingInputs && (graphInputs?.existing_ai_endpoints_count ?? 0) === 0 && (graphInputs?.existing_vector_db_services_count ?? 0) === 0)
+    || (isSecurityChecks && !loadingInputs && (graphInputs?.existing_ips_count ?? 0) === 0 && (graphInputs?.existing_subdomains_count ?? 0) === 0 && (graphInputs?.existing_baseurls_count ?? 0) === 0)
+    || (toolId === 'Shodan' && !loadingInputs && (graphInputs?.existing_ips_count ?? 0) === 0)
+    || (toolId === 'OsintEnrichment' && !loadingInputs && (graphInputs?.existing_ips_count ?? 0) === 0)
+    || (toolId === 'IpAttribution' && !loadingInputs && (graphInputs?.existing_ips_count ?? 0) === 0)
+  const hasJsUploads = toolId === 'JsRecon' && uploadedJsFiles.length > 0
+  const hasNoCustomTargets = (!hasSubdomainInput || !customSubdomains.trim()) && (!hasIpInput || !customIps.trim()) && !customPorts.trim() && (!hasUrlInput || !customUrls.trim()) && !hasJsUploads
+  const noTargetsToScan = hasUserInputs && !isGau && !isParamSpider && !includeGraphTargets && hasNoCustomTargets
+  const nmapNoPorts = (isNmap || isTlsx) && !includeGraphTargets && !customPorts.trim()
+  const httpxNoPorts = isHttpx && !includeGraphTargets && !customPorts.trim() && !customSubdomains.trim()
+  const resourceEnumNoUrls = isResourceEnum && !includeGraphTargets && !customUrls.trim() && !hasJsUploads
+  const webCachePoisonNoUrls = isWebCachePoison && !includeGraphTargets && !customUrls.trim()
+  const serializedScanNoUrls = isSerializedScan && !includeGraphTargets && !customUrls.trim()
+  const zapAjaxSpiderNoUrls = toolId === 'ZapAjaxSpider' && !loadingInputs && !customUrls.trim() && (!includeGraphTargets || ((graphInputs?.existing_baseurls_count ?? 0) === 0 && (graphInputs?.existing_endpoints_count ?? 0) === 0))
+  const arjunNoUrls = isArjun && !includeGraphTargets && !customUrls.trim()
+  const securityChecksNoUrls = isSecurityChecks && !includeGraphTargets && !customUrls.trim() && !customSubdomains.trim() && !customIps.trim()
+  const shodanNoIps = isShodan && !includeGraphTargets && !customIps.trim()
+  const osintNoIps = isOsintEnrichment && !includeGraphTargets && !customIps.trim()
+  // Graph targets only: the step tags existing IP nodes and creates none.
+  const ipAttributionNoIps = toolId === 'IpAttribution' && !loadingInputs && (graphInputs?.existing_ips_count ?? 0) === 0
+  const originDiscoveryNoFronted = isOriginDiscovery && !loadingInputs && !customSubdomains.trim() && (!includeGraphTargets || (graphInputs?.fronted_count ?? 0) === 0)
+
+  const inputCounts: string | null = (isNmap || isTlsx)
+    ? `(${graphInputs?.existing_ips_count ?? 0} IPs, ${graphInputs?.existing_ports_count ?? 0} ports, ${graphInputs?.existing_subdomains_count ?? 0} subdomains)`
+    : isHttpx
+    ? `(${graphInputs?.existing_subdomains_count ?? 0} subdomains, ${graphInputs?.existing_ports_count ?? 0} ports, ${graphInputs?.existing_baseurls_count ?? 0} existing URLs)`
+    : toolId === 'JsRecon'
+    ? `(${graphInputs?.existing_baseurls_count ?? 0} BaseURLs, ${graphInputs?.existing_endpoints_count ?? 0} Endpoints${uploadedJsFiles.length ? `, ${uploadedJsFiles.length} uploaded` : ''})`
+    : toolId === 'ZapAjaxSpider'
+    ? `(${graphInputs?.existing_baseurls_count ?? 0} BaseURLs, ${graphInputs?.existing_endpoints_count ?? 0} Endpoints)`
+    : isNuclei
+    ? `(${graphInputs?.existing_baseurls_count ?? 0} BaseURLs, ${graphInputs?.existing_endpoints_count ?? 0} Endpoints, ${graphInputs?.existing_subdomains_count ?? 0} Subdomains)`
+    : isGraphql
+    ? `(${graphInputs?.existing_baseurls_count ?? 0} BaseURLs, ${graphInputs?.existing_endpoints_count ?? 0} Endpoints${graphInputs?.existing_graphql_endpoints_count ? `, ${graphInputs.existing_graphql_endpoints_count} already-flagged GraphQL` : ''})`
+    : isWebCachePoison
+    ? `(${graphInputs?.existing_baseurls_count ?? 0} BaseURLs, ${graphInputs?.existing_endpoints_count ?? 0} Endpoints)`
+    : isSerializedScan
+    ? `(${graphInputs?.existing_baseurls_count ?? 0} BaseURLs, ${graphInputs?.existing_endpoints_count ?? 0} Endpoints)`
+    : isResourceEnum
+    ? `(${graphInputs?.existing_baseurls_count ?? 0} BaseURLs)`
+    : isArjun
+    ? `(${graphInputs?.existing_baseurls_count ?? 0} BaseURLs, ${graphInputs?.existing_endpoints_count ?? 0} Endpoints)`
+    : isSecurityChecks
+    ? `(${graphInputs?.existing_subdomains_count ?? 0} subdomains, ${graphInputs?.existing_ips_count ?? 0} IPs, ${graphInputs?.existing_baseurls_count ?? 0} BaseURLs)`
+    : isGau || isParamSpider
+    ? `(${graphInputs?.existing_subdomains_count ?? 0} subdomains)`
+    : toolId === 'Naabu'
+    ? `(${graphInputs?.existing_ips_count ?? 0} IPs, ${graphInputs?.existing_subdomains_count ?? 0} subdomains)`
+    : toolId === 'Masscan'
+    ? `(${graphInputs?.existing_ips_count ?? 0} IPs)`
+    : toolId === 'Shodan'
+    ? `(${graphInputs?.existing_ips_count ?? 0} IPs)`
+    : toolId === 'OsintEnrichment' || toolId === 'IpAttribution'
+    ? `(${graphInputs?.existing_ips_count ?? 0} IPs, ${graphInputs?.existing_subdomains_count ?? 0} subdomains)`
+    : null
+
+  return (
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      title={`Partial Recon: ${WORKFLOW_TOOLS.find(t => t.id === toolId)?.label || toolId}`}
+      size="default"
+      closeOnOverlayClick={false}
+      closeOnEscape={false}
+      headerActions={toolId ? (
+        <WikiInfoButton
+          target={toolId}
+          title={`Open ${WORKFLOW_TOOLS.find(t => t.id === toolId)?.label || toolId} wiki page`}
+        />
+      ) : null}
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        {/* Input / Output flow */}
+        <div style={{ display: 'flex', alignItems: 'stretch', gap: '12px' }}>
+          {/* Input */}
+          <div style={{
+            flex: 1, padding: '12px 14px', borderRadius: '8px',
+            backgroundColor: 'var(--bg-secondary, #1e293b)',
+            border: '1px solid var(--border-color, #334155)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#3b82f6', marginBottom: '8px' }}>
+              Input
+              {INPUT_LOGIC_TOOLTIPS[toolId] && (
+                <Tooltip content={INPUT_LOGIC_TOOLTIPS[toolId]} position="bottom" delay={150} maxWidth={900}>
+                  <Info size={16} style={{ cursor: 'help', color: '#22c55e', transform: 'translateY(-1px)' }} />
+                </Tooltip>
+              )}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: '6px' }}>
+              {inputNodeTypes.map(nt => (
+                <span key={nt} style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', backgroundColor: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa', fontWeight: 600 }}>{nt}</span>
+              ))}
+            </div>
+            <div style={{ fontSize: '13px', fontFamily: 'monospace', color: 'var(--text-primary, #e2e8f0)' }}>
+              {loadingInputs ? 'Loading...' : (
+                <>
+                  {domains.length ? <RootsSummary roots={domains} /> : (inputCounts ? 'No scan root' : 'No scan root configured')}
+                  {inputCounts ? ` ${inputCounts}` : null}
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Arrow */}
+          <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+            <ArrowRight size={18} style={{ color: 'var(--text-muted, #64748b)' }} />
+          </div>
+
+          {/* Output */}
+          <div style={{
+            flex: 1, padding: '12px 14px', borderRadius: '8px',
+            backgroundColor: 'var(--bg-secondary, #1e293b)',
+            border: '1px solid var(--border-color, #334155)',
+          }}>
+            <div style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#22c55e', marginBottom: '8px' }}>
+              Output
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+              {outputNodeTypes.map(nt => (
+                <span key={nt} style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', backgroundColor: 'rgba(34, 197, 94, 0.15)', color: '#4ade80', fontWeight: 600 }}>{nt}</span>
+              ))}
+            </div>
+            {enrichNodeTypes.length > 0 && (
+              <>
+                <div style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#4ade80', marginTop: '8px', marginBottom: '4px', opacity: 0.7 }}>
+                  Enriches
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                  {enrichNodeTypes.map(nt => (
+                    <span key={nt} style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', backgroundColor: 'rgba(34, 197, 94, 0.08)', color: '#4ade80', fontWeight: 600, borderStyle: 'dashed', border: '1px dashed rgba(34, 197, 94, 0.3)' }}>{nt}</span>
+                  ))}
+                </div>
+              </>
+            )}
+            <div style={{ fontSize: '11px', color: 'var(--text-secondary, #94a3b8)', marginTop: '6px' }}>
+              New nodes merged into graph
+            </div>
+          </div>
+        </div>
+
+        {oldModelGraph && (
+          <div style={legacyGraphStyle} role="alert" data-testid="partial-recon-legacy-graph">
+            This project&apos;s graph was built before the current scope model
+            (old domain nodes: <strong>{legacyGraph.join(', ')}</strong>). Run a full recon first;
+            partial recon is off until then.
+          </div>
+        )}
+        {!loadingInputs && staleDomains.length > 0 && (
+          <div style={noteStyle} data-testid="partial-recon-stale">
+            <strong>{staleDomains.join(', ')}</strong>: no longer a scan root of this project, not scanned; the next full recon removes {staleDomains.length === 1 ? 'it' : 'them'}.
+          </div>
+        )}
+        {!loadingInputs && emptyDomains.length > 0 && (
+          <div style={noteStyle} data-testid="partial-recon-empty">
+            <strong>{emptyDomains.join(', ')}</strong>: no recon data yet.
+          </div>
+        )}
+
+        {/* Tools info */}
+        <div style={{ fontSize: '11px', color: 'var(--text-secondary, #94a3b8)', lineHeight: '1.6' }}>
+          {TOOL_DESCRIPTIONS[toolId] || 'Runs this pipeline phase independently and merges results into the existing graph.'}
+        </div>
+
+        {toolId === 'OpenAPI' && openapiRows.length > 0 && (
+          <div style={noteStyle} data-testid="openapi-source-status">
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>Configured documents</div>
+            {openapiRows.map((row, i) => (
+              <div key={row.id ?? i} style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                {/* The location only: a query string can carry a token. */}
+                <span style={{ fontFamily: 'monospace', overflowWrap: 'anywhere' }}>{publicDocumentUrl(row.url ?? '') ?? row.url}</span>
+                <span style={{ whiteSpace: 'nowrap' }}>{openapiLabels[i] ?? 'Status unknown'}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* API key warning */}
+        {missingApiKeys.length > 0 && (
+          <div style={{
+            fontSize: '11px', color: '#facc15', lineHeight: '1.6', padding: '8px 12px', borderRadius: '6px',
+            backgroundColor: 'rgba(234, 179, 8, 0.08)', border: '1px solid rgba(234, 179, 8, 0.2)',
+            display: 'flex', flexDirection: 'column', gap: '4px',
+          }}>
+            <div style={{ fontWeight: 600 }}>
+              Missing API {missingApiKeys.length === 1 ? 'key' : 'keys'} -- results may be limited:
+            </div>
+            {missingApiKeys.map(req => (
+              <div key={req.key} style={{ paddingLeft: '8px' }}>
+                <span style={{ fontWeight: 600 }}>{req.label}:</span> {req.impact}
+              </div>
+            ))}
+            <div style={{ fontSize: '10px', color: 'var(--text-muted, #64748b)', marginTop: '2px' }}>
+              Configure API keys in Global Settings to get full results.
+            </div>
+          </div>
+        )}
+
+        {/* Include graph targets checkbox */}
+        {hasUserInputs && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={includeGraphTargets}
+              onChange={e => setIncludeGraphTargets(e.target.checked)}
+              style={{ accentColor: '#3b82f6' }}
+            />
+            <span style={{ fontSize: '12px', color: 'var(--text-primary, #e2e8f0)' }}>
+              Include existing graph targets in scan
+            </span>
+          </label>
+        )}
+
+        {/* No targets warning */}
+        {hasNoGraphTargets && includeGraphTargets && hasNoCustomTargets && (
+          <div style={{
+            fontSize: '11px', color: '#facc15', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
+            backgroundColor: 'rgba(234, 179, 8, 0.08)', border: '1px solid rgba(234, 179, 8, 0.2)',
+          }}>
+            {(isNmap || isTlsx)
+              ? 'No ports found in graph. Run Naabu first to discover open ports, or provide custom targets below.'
+              : isHttpx
+              ? 'No subdomains or ports found in graph. Run Subdomain Discovery + Port Scanning first, or provide custom subdomains below.'
+              : toolId === 'JsRecon'
+              ? 'No BaseURLs or Endpoints found in graph. Run HTTP Probing (Httpx) and Resource Enumeration (Katana/Hakrawler) first, or provide custom URLs below.'
+              : toolId === 'ZapAjaxSpider'
+              ? 'No BaseURLs or Endpoints found in graph. Run HTTP Probing (Httpx) first, enable endpoint seeding after prior crawling, or provide custom URLs below.'
+              : isNuclei
+              ? 'No BaseURLs or Endpoints found in graph. Run HTTP Probing (Httpx) and Resource Enumeration first, or provide custom URLs below.'
+              : isResourceEnum
+              ? 'No BaseURLs found in graph. Run HTTP Probing (Httpx) first to discover live URLs, or provide custom URLs below.'
+              : isArjun
+              ? 'No BaseURLs or Endpoints found in graph. Run Resource Enumeration (Katana/Hakrawler) first, or provide custom URLs below.'
+              : isSecurityChecks
+              ? 'No IPs, subdomains, or BaseURLs found in graph. Run Subdomain Discovery and HTTP Probing first to populate the graph.'
+              : toolId === 'Shodan'
+              ? 'No IPs found in graph. Run Subdomain Discovery first to populate IPs, or provide custom IPs below.'
+              : toolId === 'OsintEnrichment'
+              ? 'No IPs found in graph. Run Subdomain Discovery first to populate IPs for OSINT enrichment.'
+              : toolId === 'IpAttribution'
+              ? 'No IPs found in graph. Run a scan first: IP attribution tags the IPs already in the graph.'
+              : 'No IPs found in graph. Run Subdomain Discovery first to populate the graph, or provide custom targets below.'}
+          </div>
+        )}
+        {noTargetsToScan && (
+          <div style={{
+            fontSize: '11px', color: '#f87171', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
+            backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
+          }}>
+            Provide custom targets below or enable graph targets to run the scan.
+          </div>
+        )}
+        {nmapNoPorts && !noTargetsToScan && (
+          <div style={{
+            fontSize: '11px', color: '#f87171', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
+            backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
+          }}>
+            {`${isTlsx ? 'TLS Certificate Grab' : 'Nmap'} requires ports to scan. Provide custom ports below or enable graph targets (which include existing ports from Naabu/Masscan).`}
+          </div>
+        )}
+        {httpxNoPorts && !noTargetsToScan && (
+          <div style={{
+            fontSize: '11px', color: '#f87171', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
+            backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
+          }}>
+            Httpx requires ports or subdomains to probe. Provide custom ports/IPs, custom subdomains (probed on default ports), or enable graph targets.
+          </div>
+        )}
+        {resourceEnumNoUrls && !noTargetsToScan && (
+          <div style={{
+            fontSize: '11px', color: '#f87171', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
+            backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
+          }}>
+            {toolId === 'OpenAPI'
+              ? 'OpenAPI needs a document URL or graph BaseURLs. Provide a specification URL below or enable graph targets.'
+              : toolId === 'Jsluice'
+              ? 'Jsluice requires URLs to analyze. Provide custom URLs below or enable graph targets (which include existing Endpoints from Katana/Hakrawler).'
+              : toolId === 'JsRecon'
+              ? 'JS Recon requires URLs to analyze for JavaScript files. Provide custom URLs below or enable graph targets (which include existing BaseURLs + Endpoints).'
+              : toolId === 'ZapAjaxSpider'
+              ? 'ZAP Ajax Spider requires URLs to crawl. Provide custom URLs below or enable graph targets (BaseURLs, plus Endpoints when endpoint seeding is configured).'
+              : isNuclei
+              ? 'Nuclei works best with BaseURLs/Endpoints from prior phases. With only Subdomains it falls back to scanning http:// and https:// on default ports. Provide custom URLs below or enable graph targets.'
+              : `${toolId} requires URLs to process. Provide custom URLs below or enable graph targets (which include existing BaseURLs from Httpx).`}
+          </div>
+        )}
+        {zapAjaxSpiderNoUrls && !resourceEnumNoUrls && !noTargetsToScan && (
+          <div style={{
+            fontSize: '11px', color: '#f87171', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
+            backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
+          }}>
+            ZAP Ajax Spider requires URLs to crawl. Provide custom URLs below or enable graph targets with BaseURLs or endpoint seeding targets.
+          </div>
+        )}
+        {arjunNoUrls && !noTargetsToScan && (
+          <div style={{
+            fontSize: '11px', color: '#f87171', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
+            backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
+          }}>
+            Arjun requires endpoints to test for parameters. Provide custom URLs below or enable graph targets (which include existing BaseURLs + Endpoints from crawling).
+          </div>
+        )}
+        {webCachePoisonNoUrls && !noTargetsToScan && (
+          <div style={{
+            fontSize: '11px', color: '#f87171', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
+            backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
+          }}>
+            Web Cache Poisoning requires live URLs to test. Provide custom URLs below or enable graph targets (which include existing BaseURLs + Endpoints from crawling).
+          </div>
+        )}
+        {serializedScanNoUrls && !noTargetsToScan && (
+          <div style={{
+            fontSize: '11px', color: '#f87171', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
+            backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
+          }}>
+            The serialized object scan reads targets from the graph. Provide custom URLs below or enable graph targets (existing BaseURLs + Endpoints from crawling).
+          </div>
+        )}
+        {securityChecksNoUrls && !noTargetsToScan && (
+          <div style={{
+            fontSize: '11px', color: '#f87171', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
+            backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
+          }}>
+            Security Checks require targets to scan. Provide custom subdomains, IPs, or URLs below, or enable graph targets.
+          </div>
+        )}
+        {shodanNoIps && !noTargetsToScan && (
+          <div style={{
+            fontSize: '11px', color: '#f87171', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
+            backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
+          }}>
+            Shodan requires IPs to enrich. Provide custom IPs below or enable graph targets (which include existing IPs from Subdomain Discovery).
+          </div>
+        )}
+        {osintNoIps && !noTargetsToScan && (
+          <div style={{
+            fontSize: '11px', color: '#f87171', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
+            backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
+          }}>
+            OSINT Enrichment requires IPs to enrich. Provide custom IPs below or enable graph targets (which include existing IPs from Subdomain Discovery).
+          </div>
+        )}
+        {originDiscoveryNoFronted && !noTargetsToScan && (
+          <div style={{
+            fontSize: '11px', color: '#f87171', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
+            backgroundColor: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.2)',
+          }}>
+            Origin Discovery needs CDN-fronted hosts from a prior HTTP-probe scan, or a fronted subdomain entered below. This project has no fronted hosts in the graph yet.
+          </div>
+        )}
+
+        {/* === Section A - Custom Subdomains (only for tools that consume Subdomain) === */}
+        {hasSubdomainInput && (
+          <div>
+            <div style={labelStyle}>Custom subdomains (optional, one per line)</div>
+            <textarea
+              value={customSubdomains}
+              onChange={e => setCustomSubdomains(e.target.value)}
+              placeholder={`api.${domain || 'example.com'}\nstaging.${domain || 'example.com'}`}
+              rows={2}
+              style={textareaStyle(subdomainValidation.errors.length > 0)}
+            />
+            {subdomainValidation.errors.length > 0 ? (
+              <div style={errorListStyle}>
+                {subdomainValidation.errors.map((err, i) => (
+                  <div key={i} style={errorLineStyle}>Line {err.line}: {err.error}</div>
+                ))}
+              </div>
+            ) : (
+              <div style={hintStyle}>Will be DNS-resolved and added to the graph as Subdomain nodes</div>
+            )}
+          </div>
+        )}
+
+        {/* === Section B - Custom IPs === */}
+        {hasIpInput && (
+          <div>
+            <div style={labelStyle}>Custom IPs (optional, one per line)</div>
+            <textarea
+              value={customIps}
+              onChange={e => setCustomIps(e.target.value)}
+              placeholder={'192.168.1.1\n10.0.0.0/24'}
+              rows={2}
+              style={textareaStyle(ipValidation.errors.length > 0)}
+            />
+            {ipValidation.errors.length > 0 ? (
+              <div style={errorListStyle}>
+                {ipValidation.errors.map((err, i) => (
+                  <div key={i} style={errorLineStyle}>Line {err.line}: {err.error}</div>
+                ))}
+              </div>
+            ) : (
+              <div style={hintStyle}>{isTlsx
+                ? 'IPv4, IPv6, or CIDR ranges (/24-/32). Each open non-HTTP port gets one TLS handshake (graph + custom).'
+                : isNmap || isHttpx
+                ? 'IPv4, IPv6, or CIDR ranges (/24-/32). Will be probed on all ports (graph + custom).'
+                : 'IPv4, IPv6, or CIDR ranges (/24-/32)'}</div>
+            )}
+
+            {/* Dropdown: associate IPs to subdomain */}
+            {customIps.trim() && ipValidation.errors.length === 0 && (
+              <div style={{ marginTop: '8px' }}>
+                <div style={labelStyle}>Associate IPs to</div>
+                <select
+                  value={ipAttachTo || ''}
+                  onChange={e => setIpAttachTo(e.target.value || null)}
+                  style={{
+                    width: '100%',
+                    padding: '6px 10px',
+                    borderRadius: '6px',
+                    border: '1px solid var(--border-color, #334155)',
+                    backgroundColor: 'var(--bg-secondary, #1e293b)',
+                    color: 'var(--text-primary, #e2e8f0)',
+                    fontSize: '12px',
+                  }}
+                >
+                  <option value="">-- Generic (UserInput) --</option>
+                  {attachToOptions.map(opt => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}{opt.source === 'custom' ? ' (new)' : ''}
+                    </option>
+                  ))}
+                </select>
+                <div style={hintStyle}>
+                  {ipAttachTo
+                    ? `IPs will be linked to ${ipAttachTo} via RESOLVES_TO`
+                    : 'IPs will be tracked via a UserInput node (no subdomain link)'}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* === Section C - Custom Ports (Nmap / Httpx) === */}
+        {hasPortInput && (
+          <div>
+            <div style={labelStyle}>Custom ports (optional, one per line)</div>
+            <textarea
+              value={customPorts}
+              onChange={e => setCustomPorts(e.target.value)}
+              placeholder={'8443\n9090\n3000'}
+              rows={2}
+              style={textareaStyle(portValidation.errors.length > 0)}
+            />
+            {portValidation.errors.length > 0 ? (
+              <div style={errorListStyle}>
+                {portValidation.errors.map((err, i) => (
+                  <div key={i} style={errorLineStyle}>Line {err.line}: {err.error}</div>
+                ))}
+              </div>
+            ) : (
+              <div style={hintStyle}>Port numbers 1-65535. Scanned on all target IPs (graph + custom).</div>
+            )}
+          </div>
+        )}
+
+        {/* Httpx default ports info */}
+        {isHttpx && (customSubdomains.trim() || customIps.trim()) && !customPorts.trim() && (
+          <div style={{
+            fontSize: '11px', color: '#60a5fa', lineHeight: '1.5', padding: '8px 12px', borderRadius: '6px',
+            backgroundColor: 'rgba(59, 130, 246, 0.08)', border: '1px solid rgba(59, 130, 246, 0.2)',
+          }}>
+            No custom ports specified. Custom subdomains and IPs will be probed on default ports (80, 443) only.
+            Add custom ports above to probe additional ports.
+          </div>
+        )}
+
+        {/* === Section D - Custom URLs (resource enum: Katana, Hakrawler) === */}
+        {hasUrlInput && (
+          <div>
+            <div style={labelStyle}>Custom URLs (optional, one per line)</div>
+            <textarea
+              value={customUrls}
+              onChange={e => setCustomUrls(e.target.value)}
+              placeholder={isArjun
+                ? 'https://example.com/api/users\nhttps://example.com/admin/settings'
+                : toolId === 'Jsluice' || toolId === 'JsRecon'
+                ? 'https://example.com/assets/app.js\nhttps://cdn.example.com/bundle.min.js'
+                : isGraphql
+                ? 'https://api.example.com/graphql\nhttps://api.example.com/v1/graphql'
+                : isWebCachePoison
+                ? 'https://example.com/\nhttps://example.com/home?lang=en'
+                : 'https://example.com\nhttps://api.example.com:8443'}
+              rows={2}
+              style={textareaStyle(urlValidation.errors.length > 0)}
+            />
+            {urlValidation.errors.length > 0 ? (
+              <div style={errorListStyle}>
+                {urlValidation.errors.map((err, i) => (
+                  <div key={i} style={errorLineStyle}>Line {err.line}: {err.error}</div>
+                ))}
+              </div>
+            ) : (
+              <div style={hintStyle}>{toolId === 'OpenAPI'
+                ? 'Full URLs of specification documents (http/https). Each is fetched as a document, even with Auto-discover off.'
+                : isArjun
+                ? 'Full endpoint URLs to test for hidden query/body parameters (e.g. /api/users, /login, /admin/settings).'
+                : toolId === 'Jsluice'
+                ? 'Full URLs to JS files. Will be downloaded and analyzed for hidden endpoints and secrets.'
+                : toolId === 'JsRecon'
+                ? 'Full URLs to JS files or pages containing JS. Will be downloaded and analyzed for secrets, endpoints, source maps, and more.'
+                : isNuclei
+                ? 'Full URLs (http/https). Will be scanned for vulnerabilities, misconfigurations, and CVEs.'
+                : isGraphql
+                ? 'GraphQL endpoint URLs (e.g. /graphql, /api/graphql). Bypasses auto-discovery and tests these directly via introspection + graphql-cop checks.'
+                : isWebCachePoison
+                ? 'Full URLs (http/https) to test for cache poisoning. Only cacheable URLs are probed; tests use benign canaries in isolated cache buckets.'
+                : 'Full URLs (http/https). Will be crawled to discover endpoints and parameters.'}</div>
+            )}
+
+            {/* Dropdown: associate URLs to BaseURL. Not for OpenAPI, whose
+                endpoints go under the server each document declares. */}
+            {toolId !== 'OpenAPI' && customUrls.trim() && urlValidation.errors.length === 0 && (
+              <div style={{ marginTop: '8px' }}>
+                <div style={labelStyle}>Associate URLs to</div>
+                <select
+                  value={urlAttachTo || ''}
+                  onChange={e => setUrlAttachTo(e.target.value || null)}
+                  style={{
+                    width: '100%',
+                    padding: '6px 10px',
+                    borderRadius: '6px',
+                    border: '1px solid var(--border-color, #334155)',
+                    backgroundColor: 'var(--bg-secondary, #1e293b)',
+                    color: 'var(--text-primary, #e2e8f0)',
+                    fontSize: '12px',
+                  }}
+                >
+                  <option value="">-- Generic (UserInput) --</option>
+                  {urlAttachToOptions.map(opt => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                <div style={hintStyle}>
+                  {urlAttachTo
+                    ? `Discovered endpoints will be linked to ${urlAttachTo}`
+                    : 'URLs will be tracked via a UserInput node (no BaseURL link)'}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* === Section E - JS File Upload (JsRecon only) === */}
+        {toolId === 'JsRecon' && projectId && (
+          <div>
+            <div style={labelStyle}>Upload JS files (optional)</div>
+            <div style={{ fontSize: '10px', color: 'var(--text-muted, #64748b)', marginBottom: '6px' }}>
+              Upload .js, .mjs, .map, or .json files directly (from Burp Suite, mobile APKs, DevTools, or authenticated areas).
+              These are analyzed alongside any URLs above.
+            </div>
+            <input
+              ref={jsFileInputRef}
+              type="file"
+              accept=".js,.mjs,.map,.json"
+              multiple
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const files = e.target.files
+                if (files) Array.from(files).forEach(f => handleJsFileUpload(f))
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => jsFileInputRef.current?.click()}
+              disabled={isUploading || isStarting}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: '4px',
+                padding: '5px 10px', borderRadius: '6px', fontSize: '11px',
+                border: '1px solid var(--border-color, #334155)',
+                backgroundColor: 'var(--bg-secondary, #1e293b)',
+                color: 'var(--text-primary, #e2e8f0)',
+                cursor: isUploading || isStarting ? 'not-allowed' : 'pointer',
+                opacity: isUploading || isStarting ? 0.5 : 1,
+              }}
+            >
+              {isUploading ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} /> : <Upload size={12} />}
+              {isUploading ? ' Uploading...' : ' Upload JS Files'}
+            </button>
+
+            {uploadError && (
+              <div style={{ fontSize: '10px', color: '#f87171', marginTop: '4px' }}>{uploadError}</div>
+            )}
+
+            {uploadedJsFiles.length > 0 && (
+              <div style={{ marginTop: '6px', fontSize: '10px', color: 'var(--text-secondary, #94a3b8)' }}>
+                <div style={{ marginBottom: '3px' }}>
+                  {uploadedJsFiles.length} file(s) uploaded ({(uploadedJsFiles.reduce((sum, f) => sum + f.size, 0) / 1024).toFixed(0)} KB total)
+                </div>
+                {uploadedJsFiles.map(f => (
+                  <div key={f.name} style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '1px 0' }}>
+                    <FileText size={10} />
+                    <span>{f.name} ({(f.size / 1024).toFixed(1)} KB)</span>
+                    <button
+                      type="button"
+                      onClick={() => handleJsFileDelete(f.name)}
+                      style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', padding: '1px', display: 'inline-flex' }}
+                      title={`Delete ${f.name}`}
+                    >
+                      <Trash2 size={10} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* SubdomainDiscovery: which roots to enumerate */}
+        {isSubdomainDiscovery && !loadingInputs && (domains.length > 1 || (domains.length === 1 && enumerableDomains.length === 0)) && (
+          <div>
+            <div style={labelStyle}>Scan roots to enumerate</div>
+            <div
+              data-testid="partial-recon-discovery-list"
+              style={{
+                maxHeight: '168px', overflowY: 'auto', padding: '6px 8px', borderRadius: '6px',
+                border: '1px solid var(--border-color, #334155)', backgroundColor: 'var(--bg-secondary, #1e293b)',
+                display: 'flex', flexDirection: 'column', gap: '4px',
+              }}
+            >
+              {domains.map(root => {
+                const enumerable = enumerableDomains.includes(root)
+                return (
+                  <label
+                    key={root}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', minWidth: 0,
+                      cursor: enumerable ? 'pointer' : 'default',
+                      color: enumerable ? 'var(--text-primary, #e2e8f0)' : 'var(--text-muted, #64748b)',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={enumerable && (discoveryPick === null || discoveryPick.includes(root))}
+                      disabled={!enumerable}
+                      onChange={e => toggleDiscoveryRoot(root, e.target.checked)}
+                      style={{ accentColor: '#3b82f6', flexShrink: 0 }}
+                    />
+                    <span style={{ fontFamily: 'monospace', overflowWrap: 'anywhere', minWidth: 0 }}>{root}</span>
+                    {!enumerable && <span style={{ fontSize: '10px', whiteSpace: 'nowrap' }}>listed hosts only</span>}
+                  </label>
+                )
+              })}
+            </div>
+            <div style={hintStyle}>Only an enumerated scope group (a *.name entry) runs subdomain discovery; a listed group scans exactly its hosts.</div>
+          </div>
+        )}
+        {isSubdomainDiscovery && !loadingInputs && domains.length > 0 && runDomains.length === 0 && (
+          <div style={errorBoxStyle}>
+            {enumerableDomains.length === 0
+              ? 'No scan root in this project may be enumerated: only an enumerated scope group (a *.name entry) runs subdomain discovery.'
+              : 'Tick at least one scan root to enumerate.'}
+          </div>
+        )}
+
+        {/* Nuclei sub-feature toggles */}
+        {isNuclei && (
+          <div style={{
+            display: 'flex', flexDirection: 'column', gap: '6px',
+            padding: '10px 12px', borderRadius: '6px',
+            backgroundColor: 'var(--bg-secondary, #1e293b)',
+            border: '1px solid var(--border-color, #334155)',
+          }}>
+            <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary, #94a3b8)', marginBottom: '2px' }}>
+              Additional scans (override project settings)
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+              <input type="checkbox" checked={nucleiCveLookup} onChange={e => setNucleiCveLookup(e.target.checked)} style={{ accentColor: '#3b82f6' }} />
+              <span style={{ fontSize: '12px', color: 'var(--text-primary, #e2e8f0)' }}>CVE Lookup (enrich findings with NVD/Vulners data)</span>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+              <input type="checkbox" checked={nucleiMitre} onChange={e => setNucleiMitre(e.target.checked)} style={{ accentColor: '#3b82f6' }} />
+              <span style={{ fontSize: '12px', color: 'var(--text-primary, #e2e8f0)' }}>MITRE ATT&CK Mapping (map vulnerabilities to techniques)</span>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+              <input type="checkbox" checked={nucleiSecurityChecks} onChange={e => setNucleiSecurityChecks(e.target.checked)} style={{ accentColor: '#3b82f6' }} />
+              <span style={{ fontSize: '12px', color: 'var(--text-primary, #e2e8f0)' }}>Security Checks (TLS, headers, direct IP access, DNS)</span>
+            </label>
+          </div>
+        )}
+
+        {/* Actions */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', paddingTop: '8px', borderTop: '1px solid var(--border-color, #334155)' }}>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={isStarting}
+            style={{
+              padding: '8px 16px', borderRadius: '6px',
+              border: '1px solid var(--border-color, #334155)',
+              backgroundColor: 'transparent',
+              color: 'var(--text-primary, #e2e8f0)',
+              cursor: isStarting ? 'not-allowed' : 'pointer',
+              fontSize: '13px',
+              opacity: isStarting ? 0.5 : 1,
+            }}
+          >
+            Cancel
+          </button>
+
+          <button
+            type="button"
+            onClick={handleRun}
+            disabled={!runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || serializedScanNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || ipAttributionNoIps || originDiscoveryNoFronted || oldModelGraph}
+            style={{
+              padding: '8px 16px', borderRadius: '6px', border: 'none',
+              backgroundColor: '#3b82f6', color: '#fff',
+              cursor: !runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted || oldModelGraph ? 'not-allowed' : 'pointer',
+              fontSize: '13px',
+              display: 'flex', alignItems: 'center', gap: '6px',
+              opacity: !runDomains.length || isStarting || hasValidationErrors || noTargetsToScan || nmapNoPorts || httpxNoPorts || resourceEnumNoUrls || zapAjaxSpiderNoUrls || arjunNoUrls || webCachePoisonNoUrls || securityChecksNoUrls || shodanNoIps || osintNoIps || originDiscoveryNoFronted || oldModelGraph ? 0.5 : 1,
+            }}
+          >
+            {isStarting ? <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <Play size={14} />}
+            {isStarting ? 'Starting...' : 'Run Partial Recon'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}

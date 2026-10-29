@@ -1,0 +1,64 @@
+/**
+ * GET / PATCH / DELETE /api/mute-rule-presets/[id] — one of the caller's presets.
+ *
+ * Another user's preset answers 404, exactly like a missing one, so the route
+ * never confirms that an id exists. PATCH renames (name and description); the
+ * rules are replaced by saving a new preset, which keeps a loaded preset's
+ * badge honest: a project badges the name only while its rules match.
+ */
+import { NextRequest, NextResponse } from 'next/server'
+import prisma from '@/lib/prisma'
+import { requireEffectiveUser } from '@/lib/access'
+import { readJsonBody } from '@/lib/jsonBody'
+import { coerceDoc } from '@/lib/nodeFilters/model'
+import { parsePresetText, presetSummary } from '@/lib/nodeFilters/presets'
+
+interface RouteParams {
+  params: Promise<{ id: string }>
+}
+
+const NOT_FOUND = { error: 'Preset not found' }
+
+async function ownPreset(id: string, userId: string) {
+  const row = await prisma.userMuteRulesPreset.findUnique({ where: { id } })
+  return row && row.userId === userId ? row : null
+}
+
+export async function GET(_request: NextRequest, { params }: RouteParams) {
+  const { id } = await params
+  const eff = await requireEffectiveUser()
+  if (eff instanceof NextResponse) return eff
+  const row = await ownPreset(id, eff.userId)
+  if (!row) return NextResponse.json(NOT_FOUND, { status: 404 })
+  return NextResponse.json({ ...presetSummary(row), rules: coerceDoc(row.rules) })
+}
+
+export async function PATCH(request: NextRequest, { params }: RouteParams) {
+  const { id } = await params
+  const parsed = await readJsonBody(request)
+  if (parsed instanceof NextResponse) return parsed
+  const eff = await requireEffectiveUser()
+  if (eff instanceof NextResponse) return eff
+  const row = await ownPreset(id, eff.userId)
+  if (!row) return NextResponse.json(NOT_FOUND, { status: 404 })
+
+  const { name, description } = parsed.body
+  const text = parsePresetText(name, description === undefined ? row.description : description)
+  if (!text.ok) return NextResponse.json({ error: text.error }, { status: 400 })
+
+  const updated = await prisma.userMuteRulesPreset.update({
+    where: { id },
+    data: { name: text.name, description: text.description },
+  })
+  return NextResponse.json(presetSummary(updated))
+}
+
+export async function DELETE(_request: NextRequest, { params }: RouteParams) {
+  const { id } = await params
+  const eff = await requireEffectiveUser()
+  if (eff instanceof NextResponse) return eff
+  const row = await ownPreset(id, eff.userId)
+  if (!row) return NextResponse.json(NOT_FOUND, { status: 404 })
+  await prisma.userMuteRulesPreset.delete({ where: { id } })
+  return NextResponse.json({ ok: true })
+}

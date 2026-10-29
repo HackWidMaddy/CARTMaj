@@ -1,0 +1,306 @@
+# Agent workspace bind-mount (per-project scratch / tool-outputs / jobs)
+agentic/agent-workspace/*
+!agentic/agent-workspace/.gitkeep
+
+# Memory-governor calibration output (host-specific measured envelopes). Each
+# host generates its own via `bash tests/CART_mem_calibrate.sh`; the governor
+# falls back to safe built-in constants when absent. Never commit one host's
+# numbers for another host to inherit.
+**/resource_profile.json
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+/lib/
+/lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Translations
+*.mo
+*.pot
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+services/knowledge_base/.CART-venv/
+.env.local
+
+# Environment variables / Secrets
+.env
+*.env
+.env.*
+!.env.example
+
+# IDE / Editor settings
+.idea/
+.vscode/
+# .claude/ is intentionally tracked for project guidelines
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-workspace
+*.sublime-project
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# pyenv
+.python-version
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# Recon data files (downloaded at runtime)
+recon/data/resolvers.txt
+# MITRE CVE database refresh marker. Written by add_mitre.py inside the spawned
+# recon container, which volume-mounts the host's recon/ — so every scan dirtied
+# a tracked file and `./CART.sh update` then refused to fast-forward.
+recon/main_recon_modules/data/mitre_db/.last_update
+# The years upstream did not serve, so they are retried once per TTL rather than
+# on every scan. Written at runtime, like .last_update.
+recon/main_recon_modules/data/mitre_db/.unavailable_years.json
+# The CVE year files. add_mitre.py downloads every missing year at scan time,
+# so the checkout ships none of them and a refresh never dirties a tracked file.
+recon/main_recon_modules/data/mitre_db/database/CVE-*.jsonl
+
+# Recon output files (contain sensitive scan data)
+recon/output/*.json
+scanners/gvm_scan/output/*.json
+scanners/github_secret_hunt/output/*.json
+scanners/trufflehog_scan/output/*.json
+scanners/supply_chain_scan/output/*.json
+!recon/output/.gitkeep
+!scanners/gvm_scan/output/.gitkeep
+!scanners/github_secret_hunt/output/.gitkeep
+!scanners/trufflehog_scan/output/.gitkeep
+!scanners/supply_chain_scan/output/.gitkeep
+# AI Attack Surface scan output (garak/pyrit/giskard/promptfoo reports + transcripts)
+scanners/ai_attack_surface_scan/output/
+
+# Nmap scan results
+*.nmap
+*.xml
+*.gnmap
+
+# Stray scan/recon artifacts the MCP servers write into their own dir at runtime
+# (cookie jars, saved response bodies, DNS/fuzz output). Never commit target data.
+mcp/servers/results/
+mcp/servers/notes/
+mcp/servers/interactsh_payload.txt
+mcp/servers/cves.txt
+
+# Log files
+*.log
+/logs/
+agentic/logs/
+agentic/cypherfix_codefix/logs/
+agentic/cypherfix_triage/logs/
+
+# Certificates & cryptographic key material
+*.pem
+*.key
+*.crt
+*.cer
+*.csr
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# SSH / PuTTY private keys (default filenames)
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+*.ppk
+
+# Cloud / cluster credentials
+.netrc
+.pgpass
+.kube/
+kubeconfig
+*.kubeconfig
+.aws/credentials
+
+# Password / secret stores
+*.kdbx
+*.kdb
+
+# Database dumps & local DB files
+# NOTE: *.sql is intentionally NOT ignored — Prisma migrations live in
+# webapp/prisma/migrations/**/migration.sql and must stay tracked.
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.dump
+*.sql.gz
+*.sql.bz2
+*.bak
+*.backup
+
+# Terraform state & vars (frequently contain plaintext secrets)
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform/
+
+# Crash dumps
+*.dmp
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Node dependencies + tool caches. Anchored nowhere on purpose: running
+# vitest/npm from the repo root (instead of webapp/ or e2e/) plants a stray
+# node_modules/.vite cache here.
+node_modules/
+
+# Next.js build output
+.next/
+out/
+
+# Docker
+*.pid
+docker-compose.override.yml
+
+# Private strategy docs
+agentic/readmes/README.EMPOWER.md
+agentic/readmes/README.CYPHERFIX.md
+agentic/readmes/README.FULLFIX.md
+agentic/readmes/README.TOOL_PLUGINS.md
+docs/readmes/README.EMPOWER.md
+docs/readmes/README.FULLFIX.md
+docs/readmes/README.TOOL_PLUGINS.md
+docs/readmes/README.ATTACK_PATHS.md
+docs/readmes/AGENT.PROMPTS.md
+docs/readmes/agent_prompts/
+
+
+# Local-only working dirs (untracked; not part of the repo)
+# Anchored so they do not also ignore nested dirs of the same name,
+# e.g. webapp/src/app/api/internal/
+/_local/
+/internal/
+/validation-benchmarks/
+
+# DevergoLabs (separate local project kept at repo root, untracked)
+/DevergoLabs/
+# CART-plugins (the plugin monorepo: its own git repository, kept at repo root, untracked)
+/CART-plugins/
+
+# CART local config (created by CART.sh)
+.gvm-enabled
+.kbase-enabled
+.kbase-disabled
+.skipkbase
+.gpu-enabled
+.gpu-disabled
+.torch-variant
+.update-pending
+
+# Claude Code config
+.claude/
+
+# Benchmark data
+bmark/
+
+# Knowledge base runtime data
+services/knowledge_base/data/
+**/.file_hashes.json
+# A root-owned leftover of an old mount point. Nothing reads it, and .dockerignore
+# keeps it out of the agent image, where it would shadow the baked kb_config.yaml.
+agentic/knowledge_base/
+
+# Deploy plan (local only)
+tooling/deploy/DEPLOY_PLAN_EC2.md
+tooling/deploy/single-host/E2E_DEPLOY_TEST_PROMPT.md
+CART-session-*.md
+
+# supply-chain guinea pig dry-run scratch output
+testing/guinea_pigs/supply_chain_target/.dryrun/
+
+# transient dir used by tests/CART_env_block_test.sh (docker must see it,
+# so it cannot live in /tmp); always removed by the test itself
+.envblock-test.*
+
+# XBEN benchmark slot state (local only)
+/.xben-slots/
+
+# Session-to-video tooling (local only: bundled node_modules, ElevenLabs key,
+# rendered mp4s). Not part of the shipped app or the test gate.
+/tooling/session-video/
+/tooling/session-videos/
+
+# rushes demo-video skill: browser session state is a bearer credential
+.rushes/
+
+# RoE end-to-end validation corpus (local only: 40 disclosure-policy docs and
+# their run artifacts; not part of the shipped app or the test gate)
+/e2e_roe/
+
+# Local API keys for manual testing (credentials, never commit)
+/keys_for_test.md
+
+# jhaddix all.txt (~26 MB) that run_amass installs from the recon image on first
+# use, plus its in-flight temp name if a copy is interrupted
+recon/wordlists/jhaddix-all.txt
+recon/wordlists/.jhaddix-all.txt.*.tmp

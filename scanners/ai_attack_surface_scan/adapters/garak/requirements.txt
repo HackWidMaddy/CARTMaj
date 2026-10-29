@@ -1,0 +1,3 @@
+# garak adapter — installed into /opt/venv-garak (isolated from pyrit/giskard).
+# Pinned: adapters/garak/TOOL_API.md + the report.jsonl parser target this version.
+garak==0.15.1
