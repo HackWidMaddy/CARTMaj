@@ -349,6 +349,106 @@ npm run lint
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for repository conventions, security requirements, testing rules, and the pull-request process. Do not add real-world targets, credentials, scan output, captured traffic, or other sensitive data to the repository.
 
+
+
+## System Architecture
+
+```mermaid
+flowchart TB
+    subgraph User["👤 User Layer"]
+        Browser[Web Browser]
+        CLI[Terminal/CLI]
+    end
+
+    subgraph Frontend["🖥️ Frontend Layer"]
+        Webapp[Next.js Webapp<br/>:3000]
+    end
+
+    subgraph Backend["⚙️ Backend Layer"]
+        Agent[AI Agent Orchestrator<br/>FastAPI + LangGraph<br/>:8090]
+        ReconOrch[Recon Orchestrator<br/>FastAPI + Docker SDK<br/>:8010]
+        PluginRunner[Plugin Runner<br/>isolated network, no internet]
+    end
+
+    subgraph Tools["🔧 MCP Tools Layer"]
+        NetworkRecon[Network Recon Server<br/>Curl + Naabu<br/>:8000]
+        Nuclei[Nuclei Server<br/>:8002]
+        Metasploit[Metasploit Server<br/>:8003]
+        Nmap[Nmap Server<br/>:8004]
+    end
+
+    subgraph Scanning["🔍 Scanning Layer"]
+        Recon[Recon Pipeline<br/>Docker Container]
+        GVM[GVM/OpenVAS Scanner<br/>Network Vuln Assessment]
+        GHHunt[GitHub Secret Hunter<br/>Credential Scanning]
+        Multiscanner[Secret Multiscanner<br/>14 Sources · 1060 Detectors]
+    end
+
+    subgraph Data["💾 Data Layer"]
+        Neo4j[(Neo4j Graph DB<br/>:7474/:7687)]
+        Postgres[(PostgreSQL<br/>Project Settings<br/>:5432)]
+    end
+
+    subgraph LLMProviders["🧠 LLM Providers"]
+        OpenAI[OpenAI]
+        Anthropic[Anthropic]
+        LocalLLM[Local Models<br/>Ollama · vLLM · LM Studio]
+        OpenRouter[OpenRouter<br/>300+ Models]
+        Bedrock[AWS Bedrock]
+    end
+
+    subgraph External["🌐 External APIs"]
+        GitHubAPI[GitHub API<br/>Repos & Code Search]
+        SourceAPIs[Secret Sources<br/>GitLab · Docker · S3 · GCS<br/>Hugging Face · CI · ...]
+    end
+
+    subgraph Targets["🎯 Target Layer"]
+        Target[Target Systems]
+        GuineaPigs[Guinea Pigs<br/>Test VMs]
+    end
+
+    Browser --> Webapp
+    CLI --> Recon
+    Webapp <-->|WebSocket| Agent
+    Webapp -->|REST + SSE| ReconOrch
+    PluginRunner <-->|Gateway, via plugin-gateway proxy| Webapp
+    Webapp --> Neo4j
+    Webapp --> Postgres
+    ReconOrch -->|Docker SDK| Recon
+    ReconOrch -->|Docker SDK| GVM
+    ReconOrch -->|Docker SDK| GHHunt
+    ReconOrch -->|Docker SDK, one per source| Multiscanner
+    ReconOrch -->|Multiscanner ingest| Neo4j
+    Recon -->|Fetch Settings| Webapp
+    GHHunt -->|GitHub API| GitHubAPI
+    Multiscanner -->|GitHub API| GitHubAPI
+    Multiscanner --> SourceAPIs
+    Agent -->|API| OpenAI
+    Agent -->|API| Anthropic
+    Agent -->|API| LocalLLM
+    Agent -->|API| OpenRouter
+    Agent -->|API| Bedrock
+    Agent --> Neo4j
+    Agent -->|MCP Protocol| NetworkRecon
+    Agent -->|MCP Protocol| Nuclei
+    Agent -->|MCP Protocol| Metasploit
+    Agent -->|MCP Protocol| Nmap
+    Recon --> Neo4j
+    GVM -->|Reads Recon Output| Recon
+    GVM --> Neo4j
+    GVM --> Target
+    GVM --> GuineaPigs
+    NetworkRecon --> Target
+    Nuclei --> Target
+    Metasploit --> Target
+    Nmap --> Target
+    NetworkRecon --> GuineaPigs
+    Nuclei --> GuineaPigs
+    Metasploit --> GuineaPigs
+    Nmap --> GuineaPigs
+```
+
+
 ## License
 
 The project is distributed under the [MIT License](LICENSE), subject to the licenses of bundled third-party tools and dependencies listed in [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).
