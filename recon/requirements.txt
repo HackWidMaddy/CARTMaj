@@ -4,7 +4,7 @@
 
 # Core dependencies
 python-whois==0.9.6          # WHOIS lookups
-dnspython==2.8.0             # DNS resolution
+dnspython==2.9.2             # DNS resolution
 publicsuffixlist==1.1.0.20261010  # Public Suffix List; bump with webapp's tldts (README.DEV.md 5.8); wheel sha256 c92763e6b3982c850e9047eb95aa864753ec533f761b18bae4d04226d5e12f1d
 requests>=2.31.0             # HTTP requests
 urllib3>=2.0.0               # HTTP library
