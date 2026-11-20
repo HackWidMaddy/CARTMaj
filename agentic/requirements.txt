@@ -16,7 +16,7 @@ boto3>=1.35.0
 # Pinned: mcp 2.0.0 removed RequestContext from mcp.shared.context, which
 # langchain-mcp-adapters 0.3.x still imports -> clean-build crash-loop (issue #161).
 langchain-mcp-adapters==0.3.0
-mcp==1.28.1
+mcp==1.30.0
 
 # Neo4j integration
 langchain-community>=0.3.0
